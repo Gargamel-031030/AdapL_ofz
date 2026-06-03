@@ -7,13 +7,17 @@ current shell working directory.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
-DEFAULT_CIFAR100_DIR = DEFAULT_DATA_ROOT / "cifar100"
-DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results"
+AUTODL_DATA_DIR = Path("/root/autodl-tmp/data")
+AUTODL_RESULTS_DIR = Path("/root/autodl-tmp/results")
+
+DEFAULT_DATA_ROOT = Path(os.environ.get("ADAPL_DATA_DIR", str(AUTODL_DATA_DIR)))
+DEFAULT_CIFAR100_DIR = DEFAULT_DATA_ROOT
+DEFAULT_RESULTS_DIR = Path(os.environ.get("ADAPL_RESULTS_DIR", str(AUTODL_RESULTS_DIR)))
 
 
 def resolve_project_path(path: str | Path) -> Path:

@@ -17,7 +17,7 @@ from adapl.constants import (
     CIFAR100_MAIN_WEIGHT_DECAY,
 )
 from adapl.methods import canonicalize_method, get_method_info, method_choices
-from adapl.paths import DEFAULT_CIFAR100_DIR, resolve_project_path
+from adapl.paths import DEFAULT_CIFAR100_DIR, DEFAULT_RESULTS_DIR, resolve_project_path
 
 
 def _default_output_csv(args: argparse.Namespace) -> str:
@@ -38,12 +38,13 @@ def _default_output_csv(args: argparse.Namespace) -> str:
         privacy_tag = (
             f"_{budget_tag}_delta{args.delta}_clip{args.clipping_norm}"
         )
-    return (
-        f"results/{args.method}_{args.dataset}_{args.model}_{partition_name}_"
+    filename = (
+        f"{args.method}_{args.dataset}_{args.model}_{partition_name}_"
         f"alpha{args.dirichlet_alpha}_k{args.num_clients}_sr{args.client_fraction}_"
         f"{local_tag}_b{args.batch_size}_lr{args.lr}{privacy_tag}_"
         f"r{args.global_rounds}.csv"
     )
+    return str(DEFAULT_RESULTS_DIR / filename)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,7 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--data_dir",
         default=str(DEFAULT_CIFAR100_DIR),
         help=(
-            "Dataset cache root. Default: <project_root>/data/cifar100. "
+            "Dataset cache root. Default: /root/autodl-tmp/data. "
             "torchvision stores CIFAR-100 files under this directory."
         ),
     )

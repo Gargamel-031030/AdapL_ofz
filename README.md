@@ -18,24 +18,24 @@ baseline with ResNet18.
 
 ## Data And Output Paths
 
-Datasets are not tracked by Git. The repository ignores `data/`, so CIFAR-100
-will be downloaded on the server after you pull the project.
+Datasets are not tracked by Git. The repository ignores `data/`, so local
+dataset caches will not be pushed to GitHub.
 
-Default dataset cache path:
+Default server dataset cache path:
 
 ```text
-<project_root>/data/cifar100/
+/root/autodl-tmp/data/
 ```
 
 `torchvision.datasets.CIFAR100` uses this directory as its `root`, so the
 downloaded/extracted CIFAR-100 files will live under:
 
 ```text
-<project_root>/data/cifar100/cifar-100-python/
+/root/autodl-tmp/data/cifar-100-python/
 ```
 
-The code reference is `--data_dir`, whose default is the absolute project-root
-path above. You can override it when needed:
+The code reference is `--data_dir`, whose default is the AutoDL path above.
+You can override it with a command-line argument or with `ADAPL_DATA_DIR`:
 
 ```bash
 python main.py --method PF --data_dir /path/to/server/datasets/cifar100
@@ -44,7 +44,7 @@ python main.py --method PF --data_dir /path/to/server/datasets/cifar100
 Experiment outputs are also ignored by Git and default to:
 
 ```text
-<project_root>/results/
+/root/autodl-tmp/results/
 ```
 
 ## Implemented Methods
