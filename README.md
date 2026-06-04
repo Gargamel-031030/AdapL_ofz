@@ -101,3 +101,39 @@ For the paper privacy-level setup, levels map to maximum budgets
 `epsilon_min = min_{k in K_t} epsilon_k`, where `K_t` is the set of clients
 sampled in the current round. With 20 clients and sample rate 0.8, each round
 trains 16 clients.
+
+## Run The Min Stability Grid
+
+The script below runs this grid sequentially. It defaults to 50 rounds per
+combination for stability screening; once a configuration is promising, rerun
+that configuration for 300 rounds.
+
+```text
+epsilon: 16, 8, 4
+lr: 0.01, 0.005
+local_steps: 5, 10
+clipping_norm: 0.1, 0.5, 1.0
+```
+
+Start it in a screen session on the server:
+
+```bash
+screen -S min_grid
+bash scripts/run_min_grid.sh
+```
+
+Results are written under `/root/autodl-tmp/results/min_grid/`. A rolling
+summary is saved to `/root/autodl-tmp/results/min_grid/summary.csv`.
+
+To change the screening length:
+
+```bash
+GLOBAL_ROUNDS=100 bash scripts/run_min_grid.sh
+```
+
+To run a smaller subset:
+
+```bash
+EPSILONS="8" LRS="0.005" LOCAL_STEPS_GRID="5" CLIPPING_NORMS="0.5" \
+  bash scripts/run_min_grid.sh
+```
