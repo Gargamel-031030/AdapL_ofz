@@ -54,6 +54,9 @@ class FederatedMethod(ABC):
             "description": self.info.description,
         }
 
+    def begin_round(self, round_idx: int, selected_clients: Sequence[int]) -> None:
+        """Optional hook for methods with round-dependent state."""
+
     @abstractmethod
     def train_client(
         self,

@@ -169,6 +169,7 @@ def run_experiment(args: Namespace) -> None:
             round_idx,
             args.seed,
         )
+        method.begin_round(round_idx, selected_clients)
 
         client_updates = []
         weighted_loss_sum = 0.0

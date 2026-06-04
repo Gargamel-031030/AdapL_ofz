@@ -81,7 +81,7 @@ Outputs are written under `results/` by default.
 ```bash
 python main.py \
   --method Min \
-  --epsilon_min 2.0 \
+  --privacy_scenario 3 \
   --delta 1e-5 \
   --clipping_norm 1.0
 ```
@@ -92,3 +92,9 @@ computed from the classical single-release Gaussian mechanism bound when
 `--noise_multiplier` is not provided. Tighter multi-round accounting should be
 added under `adapl/privacy/accounting.py` when the experimental protocol needs
 formal composed privacy reports.
+
+For the paper privacy-level setup, levels map to maximum budgets
+`0.5/1.0/2.0/4.0/8.0`. In `Min`, the strict uniform budget is
+`epsilon_min = min_{k in K_t} epsilon_k`, where `K_t` is the set of clients
+sampled in the current round. With 20 clients and sample rate 0.8, each round
+trains 16 clients.

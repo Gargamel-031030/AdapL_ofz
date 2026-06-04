@@ -14,6 +14,7 @@ from adapl.fl.aggregation import fedavg_aggregate
 from adapl.fl.client import train_client_sgd
 from adapl.methods.base import ClientUpdate, FederatedMethod
 from adapl.methods.metadata import MINIMUM_INFO
+from adapl.privacy.accounting import gaussian_noise_multiplier
 from adapl.privacy.config import PrivacyConfig, build_minimum_privacy_config
 from adapl.privacy.mechanisms import privatize_client_update
 
@@ -25,6 +26,10 @@ class MinimumDPFedAvg(FederatedMethod):
         super().__init__(args)
         self.privacy_config: PrivacyConfig = build_minimum_privacy_config(args)
         self.noise_generator = torch.Generator().manual_seed(args.seed + 10_000)
+        self.current_epsilon = self.privacy_config.epsilon
+        self.current_noise_multiplier = self.privacy_config.noise_multiplier
+        self.current_noise_std = self.privacy_config.noise_std
+        self.current_selected_budgets: list[float] = []
 
     def startup_lines(self) -> list[str]:
         epsilon = (
@@ -32,7 +37,7 @@ class MinimumDPFedAvg(FederatedMethod):
             if self.privacy_config.epsilon is not None
             else "not reported"
         )
-        return [
+        lines = [
             "DP is enabled at the client update level.",
             (
                 "Min privacy config: "
@@ -43,6 +48,50 @@ class MinimumDPFedAvg(FederatedMethod):
                 f"noise_std={self.privacy_config.noise_std:.6f}"
             ),
         ]
+        if self.privacy_config.privacy_scenario is not None:
+            scenario = self.privacy_config.privacy_scenario
+            lines.append(
+                "Paper privacy scenario: "
+                f"scenario={scenario.name}, "
+                f"level_budgets={list(scenario.level_budgets)}, "
+                f"level_counts={list(scenario.level_counts)}"
+            )
+        if (
+            self.privacy_config.privacy_budgets is not None
+            and self.args.noise_multiplier is None
+            and self.args.epsilon_min is None
+        ):
+            lines.append(
+                "Min epsilon is recomputed each round from the selected clients "
+                "K_t, matching epsilon_min = min_{k in K_t} epsilon_k."
+            )
+        return lines
+
+    def begin_round(self, round_idx: int, selected_clients: Sequence[int]) -> None:
+        del round_idx
+        if (
+            self.privacy_config.privacy_budgets is None
+            or self.args.noise_multiplier is not None
+            or self.args.epsilon_min is not None
+        ):
+            self.current_epsilon = self.privacy_config.epsilon
+            self.current_noise_multiplier = self.privacy_config.noise_multiplier
+            self.current_noise_std = self.privacy_config.noise_std
+            self.current_selected_budgets = []
+            return
+
+        self.current_selected_budgets = [
+            self.privacy_config.privacy_budgets[client_id]
+            for client_id in selected_clients
+        ]
+        self.current_epsilon = min(self.current_selected_budgets)
+        self.current_noise_multiplier = gaussian_noise_multiplier(
+            self.current_epsilon,
+            self.privacy_config.delta,
+        )
+        self.current_noise_std = (
+            self.privacy_config.clipping_norm * self.current_noise_multiplier
+        )
 
     def config_rows(self) -> list[tuple[str, str, object]]:
         rows = super().config_rows()
@@ -64,6 +113,16 @@ class MinimumDPFedAvg(FederatedMethod):
                 ("privacy", "privacy_budget_count", budget_count),
             ]
         )
+        if self.privacy_config.privacy_scenario is not None:
+            scenario = self.privacy_config.privacy_scenario
+            rows.extend(
+                [
+                    ("privacy", "scenario", scenario.name),
+                    ("privacy", "level_budgets", list(scenario.level_budgets)),
+                    ("privacy", "level_counts", list(scenario.level_counts)),
+                    ("privacy", "client_budgets", list(scenario.client_budgets)),
+                ]
+            )
         return rows
 
     def config_payload(self) -> dict[str, object]:
@@ -83,6 +142,14 @@ class MinimumDPFedAvg(FederatedMethod):
                 else 0
             ),
         }
+        if self.privacy_config.privacy_scenario is not None:
+            scenario = self.privacy_config.privacy_scenario
+            payload["privacy"]["scenario"] = {
+                "name": scenario.name,
+                "level_budgets": list(scenario.level_budgets),
+                "level_counts": list(scenario.level_counts),
+                "client_budgets": list(scenario.client_budgets),
+            }
         return payload
 
     def train_client(
@@ -109,7 +176,7 @@ class MinimumDPFedAvg(FederatedMethod):
             global_state=global_state,
             local_state=local_state,
             clipping_norm=self.privacy_config.clipping_norm,
-            noise_std=self.privacy_config.noise_std,
+            noise_std=self.current_noise_std,
             generator=self.noise_generator,
         )
         return ClientUpdate(
@@ -122,7 +189,7 @@ class MinimumDPFedAvg(FederatedMethod):
                 "clipped_norm": privatized.clipped_norm,
                 "clip_factor": privatized.clip_factor,
                 "noise_std": privatized.noise_std,
-                "epsilon_min": self.privacy_config.epsilon,
+                "epsilon_min": self.current_epsilon,
                 "delta": self.privacy_config.delta,
             },
         )

@@ -8,6 +8,7 @@ from typing import Optional
 
 from adapl.privacy.accounting import gaussian_noise_multiplier
 from adapl.privacy.budgets import parse_privacy_budgets, resolve_epsilon_min
+from adapl.privacy.levels import PrivacyScenario, build_privacy_scenario
 
 
 @dataclass(frozen=True)
@@ -20,6 +21,7 @@ class PrivacyConfig:
     noise_multiplier: float
     noise_source: str
     privacy_budgets: Optional[list[float]] = None
+    privacy_scenario: Optional[PrivacyScenario] = None
 
     @property
     def noise_std(self) -> float:
@@ -42,7 +44,20 @@ def build_minimum_privacy_config(args: Namespace) -> PrivacyConfig:
     if not 0 < delta < 1:
         raise ValueError("--delta must be in (0, 1).")
 
+    privacy_scenario = None
     privacy_budgets = parse_privacy_budgets(args.privacy_budgets)
+    if privacy_budgets is None and args.privacy_scenario is not None:
+        privacy_scenario = build_privacy_scenario(
+            scenario=args.privacy_scenario,
+            num_clients=args.num_clients,
+            seed=args.privacy_budget_seed,
+        )
+        privacy_budgets = list(privacy_scenario.client_budgets)
+    if privacy_budgets is not None and len(privacy_budgets) != args.num_clients:
+        raise ValueError(
+            "The number of privacy budgets must match --num_clients "
+            f"({len(privacy_budgets)} != {args.num_clients})."
+        )
     epsilon = resolve_epsilon_min(args.epsilon_min, privacy_budgets)
 
     if args.noise_multiplier is not None:
@@ -68,4 +83,5 @@ def build_minimum_privacy_config(args: Namespace) -> PrivacyConfig:
         noise_multiplier=noise_multiplier,
         noise_source=noise_source,
         privacy_budgets=list(privacy_budgets) if privacy_budgets else None,
+        privacy_scenario=privacy_scenario,
     )

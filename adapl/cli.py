@@ -85,6 +85,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional path or comma-separated client privacy budgets for DP methods.",
     )
+    parser.add_argument(
+        "--privacy_scenario",
+        default=None,
+        choices=["1", "2", "3", "scenario1", "scenario2", "scenario3"],
+        type=str.lower,
+        help=(
+            "Paper privacy-level scenario. Scenario 1: 10/10/40/20/20; "
+            "Scenario 2: 20/20/40/10/10; Scenario 3: 90/0/0/0/10 "
+            "over levels with budgets 0.5/1/2/4/8."
+        ),
+    )
+    parser.add_argument(
+        "--privacy_budget_seed",
+        type=int,
+        default=41,
+        help="Seed used to assign scenario privacy budgets to clients.",
+    )
 
     parser.add_argument(
         "--data_dir",

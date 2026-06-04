@@ -3,9 +3,17 @@
 from adapl.privacy.accounting import gaussian_noise_multiplier
 from adapl.privacy.budgets import parse_privacy_budgets, resolve_epsilon_min
 from adapl.privacy.config import PrivacyConfig, build_minimum_privacy_config
+from adapl.privacy.levels import (
+    PAPER_LEVEL_BUDGETS,
+    PAPER_PRIVACY_SCENARIOS,
+    build_privacy_scenario,
+)
 
 __all__ = [
+    "PAPER_LEVEL_BUDGETS",
+    "PAPER_PRIVACY_SCENARIOS",
     "PrivacyConfig",
+    "build_privacy_scenario",
     "build_minimum_privacy_config",
     "gaussian_noise_multiplier",
     "parse_privacy_budgets",
