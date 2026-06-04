@@ -92,6 +92,9 @@ computed from the classical single-release Gaussian mechanism bound when
 `--noise_multiplier` is not provided. Tighter multi-round accounting should be
 added under `adapl/privacy/accounting.py` when the experimental protocol needs
 formal composed privacy reports.
+For ResNet models with BatchNorm, DP noise is applied to trainable parameters
+only; non-trainable BatchNorm buffers such as `running_var` are not noised to
+avoid invalid negative variances during evaluation.
 
 For the paper privacy-level setup, levels map to maximum budgets
 `0.5/1.0/2.0/4.0/8.0`. In `Min`, the strict uniform budget is

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import torch
 
@@ -21,14 +21,25 @@ class PrivatizedUpdate:
 def _floating_keys(
     global_state: OrderedDict[str, torch.Tensor],
     local_state: OrderedDict[str, torch.Tensor],
+    private_keys: Iterable[str] | None = None,
 ) -> list[str]:
     keys = []
-    for name, global_value in global_state.items():
+    names = list(private_keys) if private_keys is not None else list(global_state.keys())
+    for name in names:
+        if name not in global_state:
+            raise KeyError(f"Missing key in global state_dict: {name}")
         if name not in local_state:
             raise KeyError(f"Missing key in local state_dict: {name}")
+        global_value = global_state[name]
         local_value = local_state[name]
-        if torch.is_floating_point(global_value) and torch.is_floating_point(local_value):
-            keys.append(name)
+        if not (
+            torch.is_floating_point(global_value)
+            and torch.is_floating_point(local_value)
+        ):
+            if private_keys is not None:
+                raise TypeError(f"Private update key is not floating point: {name}")
+            continue
+        keys.append(name)
     return keys
 
 
@@ -68,13 +79,15 @@ def privatize_client_update(
     clipping_norm: float,
     noise_std: float,
     generator: torch.Generator,
+    private_keys: Iterable[str] | None = None,
 ) -> PrivatizedUpdate:
     if clipping_norm <= 0:
         raise ValueError("clipping_norm must be positive.")
     if noise_std < 0:
         raise ValueError("noise_std must be non-negative.")
 
-    keys = _floating_keys(global_state, local_state)
+    keys = _floating_keys(global_state, local_state, private_keys)
+    key_set = set(keys)
     update_norm = client_update_l2_norm(global_state, local_state, keys)
     clip_factor = min(1.0, clipping_norm / (update_norm + 1e-12))
     clipped_norm = min(update_norm, clipping_norm)
@@ -82,7 +95,7 @@ def privatize_client_update(
     privatized = OrderedDict()
     for name, local_value in local_state.items():
         global_value = global_state[name]
-        if name in keys:
+        if name in key_set:
             clipped_update = (local_value - global_value) * clip_factor
             if noise_std > 0:
                 clipped_update = clipped_update + _normal_like(

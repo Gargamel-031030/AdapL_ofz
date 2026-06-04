@@ -30,6 +30,16 @@ class MinimumDPFedAvg(FederatedMethod):
         self.current_noise_multiplier = self.privacy_config.noise_multiplier
         self.current_noise_std = self.privacy_config.noise_std
         self.current_selected_budgets: list[float] = []
+        self.private_state_keys: tuple[str, ...] | None = None
+
+    def _private_keys(self, model_fn: Callable[[], nn.Module]) -> tuple[str, ...]:
+        if self.private_state_keys is None:
+            model = model_fn()
+            self.private_state_keys = tuple(
+                name for name, parameter in model.named_parameters()
+                if parameter.requires_grad
+            )
+        return self.private_state_keys
 
     def startup_lines(self) -> list[str]:
         epsilon = (
@@ -45,7 +55,8 @@ class MinimumDPFedAvg(FederatedMethod):
                 f"delta={self.privacy_config.delta}, "
                 f"clipping_norm={self.privacy_config.clipping_norm}, "
                 f"noise_multiplier={self.privacy_config.noise_multiplier:.6f}, "
-                f"noise_std={self.privacy_config.noise_std:.6f}"
+                f"noise_std={self.privacy_config.noise_std:.6f}, "
+                "private_update_scope=trainable_parameters"
             ),
         ]
         if self.privacy_config.privacy_scenario is not None:
@@ -110,6 +121,7 @@ class MinimumDPFedAvg(FederatedMethod):
                 ("privacy", "noise_multiplier", self.privacy_config.noise_multiplier),
                 ("privacy", "noise_std", self.privacy_config.noise_std),
                 ("privacy", "noise_source", self.privacy_config.noise_source),
+                ("privacy", "private_update_scope", "trainable_parameters"),
                 ("privacy", "privacy_budget_count", budget_count),
             ]
         )
@@ -136,6 +148,7 @@ class MinimumDPFedAvg(FederatedMethod):
             "noise_multiplier": self.privacy_config.noise_multiplier,
             "noise_std": self.privacy_config.noise_std,
             "noise_source": self.privacy_config.noise_source,
+            "private_update_scope": "trainable_parameters",
             "privacy_budget_count": (
                 len(self.privacy_config.privacy_budgets)
                 if self.privacy_config.privacy_budgets
@@ -178,6 +191,7 @@ class MinimumDPFedAvg(FederatedMethod):
             clipping_norm=self.privacy_config.clipping_norm,
             noise_std=self.current_noise_std,
             generator=self.noise_generator,
+            private_keys=self._private_keys(model_fn),
         )
         return ClientUpdate(
             client_id=client_id,
