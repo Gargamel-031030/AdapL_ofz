@@ -50,6 +50,80 @@ def _format_selected_clients(selected_clients: Sequence[int]) -> str:
     return "[" + ", ".join(str(client_id) for client_id in selected_clients) + "]"
 
 
+def _float_metadata_values(client_updates, key: str) -> list[float]:
+    values = []
+    for update in client_updates:
+        if key not in update.metadata:
+            continue
+        value = update.metadata[key]
+        if value is None:
+            continue
+        values.append(float(value))
+    return values
+
+
+def _format_float_sequence(values: list[float]) -> str:
+    return " ".join(f"{value:.6g}" for value in values)
+
+
+def _summarize_round_metadata(client_updates) -> dict[str, object]:
+    update_norms = _float_metadata_values(client_updates, "update_norm")
+    clipped_norms = _float_metadata_values(client_updates, "clipped_norm")
+    clip_factors = _float_metadata_values(client_updates, "clip_factor")
+    noise_stds = _float_metadata_values(client_updates, "noise_std")
+    client_epsilons = _float_metadata_values(client_updates, "epsilon")
+    epsilons = _float_metadata_values(client_updates, "epsilon_min")
+    aggregation_weights = _float_metadata_values(
+        client_updates,
+        "aggregation_weight",
+    )
+
+    metrics = {}
+    if update_norms:
+        metrics["dp_update_norm_mean"] = sum(update_norms) / len(update_norms)
+        metrics["dp_update_norm_min"] = min(update_norms)
+        metrics["dp_update_norm_max"] = max(update_norms)
+    if clipped_norms:
+        metrics["dp_clipped_norm_mean"] = sum(clipped_norms) / len(clipped_norms)
+    if clip_factors:
+        metrics["dp_clip_factor_mean"] = sum(clip_factors) / len(clip_factors)
+        metrics["dp_clip_factor_min"] = min(clip_factors)
+    if noise_stds:
+        metrics["dp_noise_std_mean"] = sum(noise_stds) / len(noise_stds)
+    if client_epsilons:
+        metrics["selected_epsilons"] = _format_float_sequence(client_epsilons)
+        metrics["dp_epsilon_mean"] = sum(client_epsilons) / len(client_epsilons)
+    if epsilons:
+        metrics["dp_epsilon_min"] = min(epsilons)
+    if aggregation_weights:
+        metrics["aggregation_weights"] = _format_float_sequence(aggregation_weights)
+        metrics["aggregation_weight_mean"] = (
+            sum(aggregation_weights) / len(aggregation_weights)
+        )
+        metrics["aggregation_weight_min"] = min(aggregation_weights)
+        metrics["aggregation_weight_max"] = max(aggregation_weights)
+    return metrics
+
+
+def _format_round_metadata(metrics: dict[str, object]) -> str:
+    if not metrics:
+        return ""
+    text = (
+        " | "
+        f"upd_norm={metrics.get('dp_update_norm_mean', math.nan):.4f} "
+        f"clip={metrics.get('dp_clip_factor_mean', math.nan):.4f} "
+        f"noise_std={metrics.get('dp_noise_std_mean', math.nan):.4f} "
+        f"eps_min={metrics.get('dp_epsilon_min', math.nan):.4f}"
+    )
+    if "aggregation_weight_mean" in metrics:
+        text += (
+            f" eps_mean={metrics.get('dp_epsilon_mean', math.nan):.4f} "
+            f"w_range=[{metrics.get('aggregation_weight_min', math.nan):.4f},"
+            f"{metrics.get('aggregation_weight_max', math.nan):.4f}]"
+        )
+    return text
+
+
 def run_experiment(args: Namespace) -> None:
     _validate_args(args)
     method = build_method(args.method, args)
@@ -186,6 +260,7 @@ def run_experiment(args: Namespace) -> None:
 
         total_examples = sum(update.num_examples for update in client_updates)
         train_loss = weighted_loss_sum / float(total_examples)
+        round_metrics = _summarize_round_metadata(client_updates)
         global_state = method.aggregate(client_updates)
         global_model.load_state_dict(global_state)
 
@@ -202,6 +277,7 @@ def run_experiment(args: Namespace) -> None:
             train_loss=train_loss,
             test_loss=test_loss,
             test_accuracy=test_accuracy,
+            round_metrics=round_metrics,
         )
         print(
             f"Round {round_idx:03d}/{args.global_rounds} | "
@@ -209,6 +285,7 @@ def run_experiment(args: Namespace) -> None:
             f"train_loss={train_loss:.4f} | "
             f"test_loss={test_loss:.4f} | "
             f"test_acc={test_accuracy:.4f}"
+            f"{_format_round_metadata(round_metrics)}"
         )
 
     print(f"Final test accuracy: {final_test_acc:.4f}")

@@ -52,9 +52,12 @@ Experiment outputs are also ignored by Git and default to:
 - `pf`, `privacyfree`, `fedavg`: privacy-free FedAvg baseline.
 - `min`, `minimum`: DP-FedAvg baseline where all clients use the strictest
   privacy budget `epsilon_min`.
+- `weiavg`, `weightedavg`, `weighted-avg`: heterogeneous DP-FedAvg baseline
+  where selected client deltas are aggregated with
+  `epsilon_i / sum(epsilon_selected)`.
 
 The following methods are registered as planned extension points but are not
-implemented yet: `feddpa`, `ppfed`, `weiavg`, `pfa`, `efl`, `adapl`.
+implemented yet: `feddpa`, `ppfed`, `pfa`, `efl`, `adapl`.
 
 ## Run A Smoke Test
 
@@ -101,6 +104,24 @@ For the paper privacy-level setup, levels map to maximum budgets
 `epsilon_min = min_{k in K_t} epsilon_k`, where `K_t` is the set of clients
 sampled in the current round. With 20 clients and sample rate 0.8, each round
 trains 16 clients.
+
+## Run The WeiAvg Baseline
+
+`WeiAvg` uses heterogeneous client privacy budgets. Pass either a paper
+privacy-level scenario or an explicit budget list/file:
+
+```bash
+python main.py \
+  --method weiavg \
+  --privacy_scenario 3 \
+  --delta 1e-5 \
+  --clipping_norm 1.0
+```
+
+For a selected client set `K_t`, the server computes
+`weight_i = epsilon_i / sum_{j in K_t} epsilon_j` and applies the weighted
+client update. Use `--method pf` with the same FL/data hyperparameters for the
+ordinary FedAvg comparison.
 
 ## Run The Min Stability Grid
 

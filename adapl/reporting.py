@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
-from typing import Dict, Iterable, Optional, Sequence
+from typing import Dict, Iterable, Mapping, Optional, Sequence
 
 from adapl.constants import (
     CIFAR100_HARD_DIRICHLET_ALPHA,
@@ -202,8 +203,34 @@ def init_output_csv(path: str) -> None:
                 "train_loss",
                 "test_loss",
                 "test_accuracy",
+                "selected_epsilons",
+                "aggregation_weights",
+                "dp_update_norm_mean",
+                "dp_update_norm_min",
+                "dp_update_norm_max",
+                "dp_clipped_norm_mean",
+                "dp_clip_factor_mean",
+                "dp_clip_factor_min",
+                "dp_noise_std_mean",
+                "dp_epsilon_mean",
+                "dp_epsilon_min",
+                "aggregation_weight_mean",
+                "aggregation_weight_min",
+                "aggregation_weight_max",
             ]
         )
+
+
+def _format_optional_metric(value: object) -> str:
+    if value is None:
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if math.isnan(number):
+        return ""
+    return f"{number:.6f}"
 
 
 def append_output_csv(
@@ -213,7 +240,9 @@ def append_output_csv(
     train_loss: float,
     test_loss: float,
     test_accuracy: float,
+    round_metrics: Optional[Mapping[str, object]] = None,
 ) -> None:
+    round_metrics = round_metrics or {}
     with open(path, "a", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(
@@ -223,5 +252,19 @@ def append_output_csv(
                 f"{train_loss:.6f}",
                 f"{test_loss:.6f}",
                 f"{test_accuracy:.6f}",
+                _format_optional_metric(round_metrics.get("selected_epsilons")),
+                _format_optional_metric(round_metrics.get("aggregation_weights")),
+                _format_optional_metric(round_metrics.get("dp_update_norm_mean")),
+                _format_optional_metric(round_metrics.get("dp_update_norm_min")),
+                _format_optional_metric(round_metrics.get("dp_update_norm_max")),
+                _format_optional_metric(round_metrics.get("dp_clipped_norm_mean")),
+                _format_optional_metric(round_metrics.get("dp_clip_factor_mean")),
+                _format_optional_metric(round_metrics.get("dp_clip_factor_min")),
+                _format_optional_metric(round_metrics.get("dp_noise_std_mean")),
+                _format_optional_metric(round_metrics.get("dp_epsilon_mean")),
+                _format_optional_metric(round_metrics.get("dp_epsilon_min")),
+                _format_optional_metric(round_metrics.get("aggregation_weight_mean")),
+                _format_optional_metric(round_metrics.get("aggregation_weight_min")),
+                _format_optional_metric(round_metrics.get("aggregation_weight_max")),
             ]
         )

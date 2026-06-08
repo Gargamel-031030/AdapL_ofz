@@ -33,6 +33,11 @@ def _default_output_csv(args: argparse.Namespace) -> str:
             budget_tag = f"epsmin{args.epsilon_min}"
         elif args.noise_multiplier is not None:
             budget_tag = f"nm{args.noise_multiplier}"
+        elif args.privacy_scenario is not None:
+            scenario = args.privacy_scenario.replace("scenario", "").strip("_- ")
+            budget_tag = f"scenario{scenario}"
+        elif args.privacy_budgets is not None:
+            budget_tag = "budgets"
         else:
             budget_tag = "dp"
         privacy_tag = (

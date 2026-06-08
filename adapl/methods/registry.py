@@ -48,6 +48,10 @@ def build_method(method_name: str, args: Namespace) -> FederatedMethod:
         from adapl.methods.minimum import MinimumDPFedAvg
 
         return MinimumDPFedAvg(args)
+    if info.canonical_name == "weiavg":
+        from adapl.methods.weiavg import WeiAvgDPFedAvg
+
+        return WeiAvgDPFedAvg(args)
 
     raise NotImplementedError(
         f"{info.display_name} is registered but not implemented yet. "

@@ -35,6 +35,18 @@ MINIMUM_INFO = MethodInfo(
 )
 
 
+WEIAVG_INFO = MethodInfo(
+    canonical_name="weiavg",
+    aliases=("weiavg", "weightedavg", "weighted-avg"),
+    display_name="WeiAvg",
+    description=(
+        "Heterogeneous DP-FedAvg where aggregation weights are determined "
+        "solely by client privacy budgets."
+    ),
+    implemented=True,
+)
+
+
 PLANNED_METHODS = [
     MethodInfo(
         canonical_name="feddpa",
@@ -53,16 +65,6 @@ PLANNED_METHODS = [
         description=(
             "Privacy-preserving personalized FL that separates global and local "
             "model parts and aggregates only global parameters."
-        ),
-        implemented=False,
-    ),
-    MethodInfo(
-        canonical_name="weiavg",
-        aliases=("weiavg", "weightedavg", "weighted-avg"),
-        display_name="WeiAvg",
-        description=(
-            "Weighted aggregation for heterogeneous DP where weights are mainly "
-            "determined by client privacy budgets."
         ),
         implemented=False,
     ),
@@ -96,4 +98,4 @@ PLANNED_METHODS = [
 ]
 
 
-METHOD_INFOS = [PRIVACY_FREE_INFO, MINIMUM_INFO, *PLANNED_METHODS]
+METHOD_INFOS = [PRIVACY_FREE_INFO, MINIMUM_INFO, WEIAVG_INFO, *PLANNED_METHODS]
