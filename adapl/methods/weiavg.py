@@ -50,6 +50,8 @@ class WeiAvgFedAvg(FederatedMethod):
         if not self.no_dp:
             self.clipping_norm: float = args.clipping_norm
             self.delta: float = args.delta
+            self.user_noise_multiplier: float | None = args.noise_multiplier
+            self.user_epsilon_min: float | None = args.epsilon_min
             self.noise_generator = torch.Generator().manual_seed(args.seed + 20_000)
 
     @property
@@ -89,6 +91,16 @@ class WeiAvgFedAvg(FederatedMethod):
                 ),
             ]
         else:
+            if self.user_noise_multiplier is not None:
+                noise_desc = (
+                    f"uniform_noise_multiplier={self.user_noise_multiplier}"
+                )
+            elif self.user_epsilon_min is not None:
+                noise_desc = (
+                    f"per_client_noise_eps_floor={self.user_epsilon_min}"
+                )
+            else:
+                noise_desc = "per_client_noise=epsilon_k_based"
             lines = [
                 (
                     "WeiAvg DP budget-weighted aggregation: "
@@ -97,7 +109,7 @@ class WeiAvgFedAvg(FederatedMethod):
                     f"delta={self.delta}, "
                     f"clipping_norm={self.clipping_norm}, "
                     "aggregation_weight=epsilon_k/sum_selected_epsilon, "
-                    "per_client_noise=epsilon_k_based"
+                    f"{noise_desc}"
                 ),
             ]
         if self.budget_config.privacy_scenario is not None:
@@ -121,10 +133,21 @@ class WeiAvgFedAvg(FederatedMethod):
             self.current_selected_budgets
         )
         if not self.no_dp:
-            self.current_noise_stds = [
-                self.clipping_norm * gaussian_noise_multiplier(eps, self.delta)
-                for eps in self.current_selected_budgets
-            ]
+            if self.user_noise_multiplier is not None:
+                self.current_noise_stds = [
+                    self.clipping_norm * self.user_noise_multiplier
+                    for _ in self.current_selected_budgets
+                ]
+            else:
+                noise_epsilons = (
+                    [max(eps, self.user_epsilon_min) for eps in self.current_selected_budgets]
+                    if self.user_epsilon_min is not None
+                    else self.current_selected_budgets
+                )
+                self.current_noise_stds = [
+                    self.clipping_norm * gaussian_noise_multiplier(eps, self.delta)
+                    for eps in noise_epsilons
+                ]
         else:
             self.current_noise_stds = [0.0] * len(self.current_selected_budgets)
 
@@ -143,6 +166,12 @@ class WeiAvgFedAvg(FederatedMethod):
                 ]
             )
         else:
+            if self.user_noise_multiplier is not None:
+                noise_source = "user_noise_multiplier"
+            elif self.user_epsilon_min is not None:
+                noise_source = "per_client_eps_floor"
+            else:
+                noise_source = "per_client_epsilon_delta_bound"
             rows.extend(
                 [
                     ("privacy", "dp_enabled", True),
@@ -151,7 +180,11 @@ class WeiAvgFedAvg(FederatedMethod):
                     ("privacy", "epsilon_max", max(budgets)),
                     ("privacy", "delta", self.delta),
                     ("privacy", "clipping_norm", self.clipping_norm),
-                    ("privacy", "noise_source", "per_client_epsilon_delta_bound"),
+                    ("privacy", "noise_source", noise_source),
+                    ("privacy", "noise_multiplier",
+                     self.user_noise_multiplier if self.user_noise_multiplier is not None
+                     else "per_client"),
+                    ("privacy", "epsilon_min_override", self.user_epsilon_min),
                     ("privacy", "private_update_scope", "trainable_parameters"),
                     ("privacy", "privacy_budget_count", len(budgets)),
                     ("aggregation", "weight_rule", "epsilon_k/sum_selected_epsilon"),
@@ -184,13 +217,25 @@ class WeiAvgFedAvg(FederatedMethod):
                 "aggregation_weight_rule": "epsilon_k/sum_selected_epsilon",
             }
         else:
+            if self.user_noise_multiplier is not None:
+                noise_source = "user_noise_multiplier"
+            elif self.user_epsilon_min is not None:
+                noise_source = "per_client_eps_floor"
+            else:
+                noise_source = "per_client_epsilon_delta_bound"
             payload["privacy"] = {
                 "mechanism": "per_client_gaussian",
                 "epsilon_min": min(budgets),
                 "epsilon_max": max(budgets),
                 "delta": self.delta,
                 "clipping_norm": self.clipping_norm,
-                "noise_source": "per_client_epsilon_delta_bound",
+                "noise_source": noise_source,
+                "noise_multiplier": (
+                    self.user_noise_multiplier
+                    if self.user_noise_multiplier is not None
+                    else "per_client"
+                ),
+                "epsilon_min_override": self.user_epsilon_min,
                 "private_update_scope": "trainable_parameters",
                 "privacy_budget_count": len(budgets),
                 "aggregation_weight_rule": "epsilon_k/sum_selected_epsilon",
