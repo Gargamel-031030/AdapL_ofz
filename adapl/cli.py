@@ -43,7 +43,7 @@ def _default_output_csv(args: argparse.Namespace) -> str:
         privacy_tag = (
             f"_{budget_tag}"
             if args.no_dp
-            else f"_{budget_tag}_delta{args.delta}_clip{args.clipping_norm}"
+            else f"_dp_{budget_tag}_clip{args.clipping_norm}"
         )
     filename = (
         f"{args.method}_{args.dataset}_{args.model}_{partition_name}_"
