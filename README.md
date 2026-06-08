@@ -52,7 +52,7 @@ Experiment outputs are also ignored by Git and default to:
 - `pf`, `privacyfree`, `fedavg`: privacy-free FedAvg baseline.
 - `min`, `minimum`: DP-FedAvg baseline where all clients use the strictest
   privacy budget `epsilon_min`.
-- `weiavg`, `weightedavg`, `weighted-avg`: heterogeneous DP-FedAvg baseline
+- `weiavg`, `weightedavg`, `weighted-avg`: budget-weighted FedAvg baseline
   where selected client deltas are aggregated with
   `epsilon_i / sum(epsilon_selected)`.
 
@@ -113,9 +113,7 @@ privacy-level scenario or an explicit budget list/file:
 ```bash
 python main.py \
   --method weiavg \
-  --privacy_scenario 3 \
-  --delta 1e-5 \
-  --clipping_norm 1.0
+  --privacy_scenario 3
 ```
 
 For a selected client set `K_t`, the server computes

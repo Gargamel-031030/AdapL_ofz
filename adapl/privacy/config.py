@@ -28,6 +28,41 @@ class PrivacyConfig:
         return self.clipping_norm * self.noise_multiplier
 
 
+@dataclass(frozen=True)
+class HeterogeneousBudgetConfig:
+    privacy_budgets: list[float]
+    privacy_scenario: Optional[PrivacyScenario] = None
+
+
+def build_heterogeneous_budget_config(
+    args: Namespace,
+    method_label: str,
+) -> HeterogeneousBudgetConfig:
+    privacy_scenario = None
+    privacy_budgets = parse_privacy_budgets(args.privacy_budgets)
+    if privacy_budgets is None and args.privacy_scenario is not None:
+        privacy_scenario = build_privacy_scenario(
+            scenario=args.privacy_scenario,
+            num_clients=args.num_clients,
+            seed=args.privacy_budget_seed,
+        )
+        privacy_budgets = list(privacy_scenario.client_budgets)
+    if privacy_budgets is None:
+        raise ValueError(
+            f"{method_label} requires heterogeneous client budgets. "
+            "Pass --privacy_scenario or --privacy_budgets."
+        )
+    if len(privacy_budgets) != args.num_clients:
+        raise ValueError(
+            "The number of privacy budgets must match --num_clients "
+            f"({len(privacy_budgets)} != {args.num_clients})."
+        )
+    return HeterogeneousBudgetConfig(
+        privacy_budgets=list(privacy_budgets),
+        privacy_scenario=privacy_scenario,
+    )
+
+
 def build_minimum_privacy_config(args: Namespace) -> PrivacyConfig:
     if getattr(args, "no_dp", False):
         raise ValueError("Min / Minimum requires DP. Remove --no_dp or use --method PF.")

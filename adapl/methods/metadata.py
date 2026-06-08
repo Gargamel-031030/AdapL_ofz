@@ -40,8 +40,8 @@ WEIAVG_INFO = MethodInfo(
     aliases=("weiavg", "weightedavg", "weighted-avg"),
     display_name="WeiAvg",
     description=(
-        "Heterogeneous DP-FedAvg where aggregation weights are determined "
-        "solely by client privacy budgets."
+        "FedAvg variant where aggregation weights are determined solely by "
+        "client privacy budgets."
     ),
     implemented=True,
 )

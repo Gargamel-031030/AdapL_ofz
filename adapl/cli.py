@@ -40,9 +40,12 @@ def _default_output_csv(args: argparse.Namespace) -> str:
             budget_tag = "budgets"
         else:
             budget_tag = "dp"
-        privacy_tag = (
-            f"_{budget_tag}_delta{args.delta}_clip{args.clipping_norm}"
-        )
+        if args.method == "weiavg":
+            privacy_tag = f"_{budget_tag}"
+        else:
+            privacy_tag = (
+                f"_{budget_tag}_delta{args.delta}_clip{args.clipping_norm}"
+            )
     filename = (
         f"{args.method}_{args.dataset}_{args.model}_{partition_name}_"
         f"alpha{args.dirichlet_alpha}_k{args.num_clients}_sr{args.client_fraction}_"
@@ -241,8 +244,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     args.method = canonicalize_method(args.method)
 
     if args.no_dp is None:
-        args.no_dp = args.method == "pf"
-    if args.method != "pf":
+        args.no_dp = args.method in {"pf", "weiavg"}
+    if args.method not in {"pf", "weiavg"}:
         if args.delta is None:
             args.delta = 1e-5
         if args.clipping_norm is None:
