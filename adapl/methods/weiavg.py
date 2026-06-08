@@ -19,7 +19,7 @@ from adapl.privacy.config import (
     HeterogeneousBudgetConfig,
     build_heterogeneous_budget_config,
 )
-from adapl.privacy.mechanisms import client_update_l2_norm, privatize_client_update
+from adapl.privacy.mechanisms import client_update_l2_norm
 
 
 def normalize_budget_weights(privacy_budgets: Sequence[float]) -> list[float]:
@@ -45,7 +45,7 @@ class WeiAvgFedAvg(FederatedMethod):
         self.current_selected_clients: list[int] = []
         self.current_selected_budgets: list[float] = []
         self.current_selected_weights: list[float] = []
-        self.current_noise_stds: list[float] = []
+        self.current_noise_multipliers: list[float] = []
 
         if not self.no_dp:
             self.clipping_norm: float = args.clipping_norm
@@ -134,8 +134,8 @@ class WeiAvgFedAvg(FederatedMethod):
         )
         if not self.no_dp:
             if self.user_noise_multiplier is not None:
-                self.current_noise_stds = [
-                    self.clipping_norm * self.user_noise_multiplier
+                self.current_noise_multipliers = [
+                    self.user_noise_multiplier
                     for _ in self.current_selected_budgets
                 ]
             else:
@@ -144,12 +144,12 @@ class WeiAvgFedAvg(FederatedMethod):
                     if self.user_epsilon_min is not None
                     else self.current_selected_budgets
                 )
-                self.current_noise_stds = [
-                    self.clipping_norm * gaussian_noise_multiplier(eps, self.delta)
+                self.current_noise_multipliers = [
+                    gaussian_noise_multiplier(eps, self.delta)
                     for eps in noise_epsilons
                 ]
         else:
-            self.current_noise_stds = [0.0] * len(self.current_selected_budgets)
+            self.current_noise_multipliers = [0.0] * len(self.current_selected_budgets)
 
     def config_rows(self) -> list[tuple[str, str, object]]:
         rows = super().config_rows()
@@ -260,48 +260,59 @@ class WeiAvgFedAvg(FederatedMethod):
         train_loader: DataLoader,
         device: torch.device,
     ) -> ClientUpdate:
-        local_state, client_loss, client_size = train_client_sgd(
-            model_fn=model_fn,
-            global_state=global_state,
-            train_loader=train_loader,
-            local_steps=self.args.local_steps,
-            local_epochs=self.args.local_epochs,
-            local_update_mode=self.args.local_update_mode,
-            lr=self.args.lr,
-            momentum=self.args.momentum,
-            weight_decay=self.args.weight_decay,
-            device=device,
-        )
-
         selected_index = self.current_selected_clients.index(client_id)
         epsilon = self.current_selected_budgets[selected_index]
         aggregation_weight = self.current_selected_weights[selected_index]
 
         if not self.no_dp:
-            privatized = privatize_client_update(
+            local_state, client_loss, client_size = train_client_sgd(
+                model_fn=model_fn,
                 global_state=global_state,
-                local_state=local_state,
+                train_loader=train_loader,
+                local_steps=self.args.local_steps,
+                local_epochs=self.args.local_epochs,
+                local_update_mode=self.args.local_update_mode,
+                lr=self.args.lr,
+                momentum=self.args.momentum,
+                weight_decay=self.args.weight_decay,
+                device=device,
                 clipping_norm=self.clipping_norm,
-                noise_std=self.current_noise_stds[selected_index],
-                generator=self.noise_generator,
-                private_keys=self._private_keys(model_fn),
+                noise_multiplier=self.current_noise_multipliers[selected_index],
+                noise_generator=self.noise_generator,
+            )
+            update_norm = client_update_l2_norm(
+                global_state,
+                local_state,
+                self._private_keys(model_fn),
             )
             return ClientUpdate(
                 client_id=client_id,
-                state_dict=privatized.state_dict,
+                state_dict=local_state,
                 train_loss=client_loss,
                 num_examples=client_size,
                 metadata={
-                    "update_norm": privatized.update_norm,
-                    "clipped_norm": privatized.clipped_norm,
-                    "clip_factor": privatized.clip_factor,
-                    "noise_std": privatized.noise_std,
+                    "update_norm": update_norm,
+                    "clipped_norm": min(update_norm, self.clipping_norm),
+                    "clip_factor": min(1.0, self.clipping_norm / (update_norm + 1e-12)),
+                    "noise_std": 0.0,
                     "epsilon": epsilon,
                     "epsilon_min": min(self.current_selected_budgets),
                     "aggregation_weight": aggregation_weight,
                 },
             )
         else:
+            local_state, client_loss, client_size = train_client_sgd(
+                model_fn=model_fn,
+                global_state=global_state,
+                train_loader=train_loader,
+                local_steps=self.args.local_steps,
+                local_epochs=self.args.local_epochs,
+                local_update_mode=self.args.local_update_mode,
+                lr=self.args.lr,
+                momentum=self.args.momentum,
+                weight_decay=self.args.weight_decay,
+                device=device,
+            )
             update_norm = client_update_l2_norm(
                 global_state,
                 local_state,

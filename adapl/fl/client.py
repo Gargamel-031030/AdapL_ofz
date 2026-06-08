@@ -12,6 +12,37 @@ from torch.utils.data import DataLoader
 from adapl.utils import clone_state_dict
 
 
+def _clip_and_noise_gradients(
+    model: nn.Module,
+    clipping_norm: float,
+    noise_multiplier: float,
+    batch_size: int,
+    generator: torch.Generator,
+) -> None:
+    total_norm = 0.0
+    for p in model.parameters():
+        if p.grad is not None:
+            total_norm += p.grad.norm(2).item() ** 2
+    total_norm = total_norm ** 0.5
+
+    clip_factor = min(1.0, clipping_norm / (total_norm + 1e-12))
+    noise_std = noise_multiplier * clipping_norm / batch_size
+
+    for p in model.parameters():
+        if p.grad is not None:
+            p.grad.mul_(clip_factor)
+            if noise_std > 0:
+                p.grad.add_(
+                    torch.normal(
+                        0, noise_std,
+                        size=p.grad.shape,
+                        generator=generator,
+                        device=p.grad.device,
+                        dtype=p.grad.dtype,
+                    )
+                )
+
+
 def train_minibatch(
     model: nn.Module,
     criterion: nn.Module,
@@ -27,7 +58,6 @@ def train_minibatch(
     logits = model(inputs)
     loss = criterion(logits, targets)
     loss.backward()
-    optimizer.step()
 
     batch_size = targets.size(0)
     return loss.item() * batch_size, batch_size
@@ -44,6 +74,9 @@ def train_client_sgd(
     momentum: float,
     weight_decay: float,
     device: torch.device,
+    clipping_norm: float | None = None,
+    noise_multiplier: float | None = None,
+    noise_generator: torch.Generator | None = None,
 ) -> Tuple[OrderedDict[str, torch.Tensor], float, int]:
     model = model_fn().to(device)
     model.load_state_dict(global_state)
@@ -59,6 +92,12 @@ def train_client_sgd(
 
     total_loss = 0.0
     total_examples = 0
+    use_dp = (
+        clipping_norm is not None
+        and noise_multiplier is not None
+        and noise_generator is not None
+    )
+
     if local_update_mode == "random-batch":
         if local_epochs is not None:
             local_steps = local_epochs
@@ -81,6 +120,11 @@ def train_client_sgd(
                 targets,
                 device,
             )
+            if use_dp:
+                _clip_and_noise_gradients(
+                    model, clipping_norm, noise_multiplier, batch_size, noise_generator,
+                )
+            optimizer.step()
             total_loss += batch_loss
             total_examples += batch_size
     elif local_update_mode == "full-epoch":
@@ -98,6 +142,11 @@ def train_client_sgd(
                     targets,
                     device,
                 )
+                if use_dp:
+                    _clip_and_noise_gradients(
+                        model, clipping_norm, noise_multiplier, batch_size, noise_generator,
+                    )
+                optimizer.step()
                 total_loss += batch_loss
                 total_examples += batch_size
     else:
