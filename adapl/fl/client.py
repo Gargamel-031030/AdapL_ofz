@@ -17,7 +17,6 @@ def _clip_and_noise_gradients(
     clipping_norm: float,
     noise_multiplier: float,
     batch_size: int,
-    generator: torch.Generator,
 ) -> None:
     total_norm = 0.0
     for p in model.parameters():
@@ -36,7 +35,6 @@ def _clip_and_noise_gradients(
                     torch.normal(
                         0, noise_std,
                         size=p.grad.shape,
-                        generator=generator,
                         device=p.grad.device,
                         dtype=p.grad.dtype,
                     )
@@ -122,7 +120,7 @@ def train_client_sgd(
             )
             if use_dp:
                 _clip_and_noise_gradients(
-                    model, clipping_norm, noise_multiplier, batch_size, noise_generator,
+                    model, clipping_norm, noise_multiplier, batch_size,
                 )
             optimizer.step()
             total_loss += batch_loss
@@ -144,7 +142,7 @@ def train_client_sgd(
                 )
                 if use_dp:
                     _clip_and_noise_gradients(
-                        model, clipping_norm, noise_multiplier, batch_size, noise_generator,
+                        model, clipping_norm, noise_multiplier, batch_size,
                     )
                 optimizer.step()
                 total_loss += batch_loss
