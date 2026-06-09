@@ -13,7 +13,10 @@ from torch.utils.data import DataLoader
 from adapl.fl.aggregation import fedavg_aggregate
 from adapl.methods.base import ClientUpdate, FederatedMethod
 from adapl.methods.metadata import FEDDPA_INFO
-from adapl.privacy.accounting import gaussian_noise_multiplier
+from adapl.privacy.accounting import (
+    ClientPrivacyBudgetManager,
+    PrivacyBudgetContext,
+)
 from adapl.privacy.config import PrivacyConfig, build_minimum_privacy_config
 from adapl.privacy.mechanisms import client_update_l2_norm
 from adapl.utils import clone_state_dict
@@ -48,6 +51,7 @@ class FedDPA(FederatedMethod):
         self.current_selected_clients: list[int] = []
         self.current_selected_budgets: list[float] = []
         self.current_noise_multipliers: list[float] = []
+        self.current_privacy_context: dict[int, PrivacyBudgetContext] = {}
         self.client_states: dict[int, OrderedDict[str, torch.Tensor]] = {}
         self.private_state_keys: tuple[str, ...] | None = None
 
@@ -60,6 +64,44 @@ class FedDPA(FederatedMethod):
                 if parameter.requires_grad
             )
         return self.private_state_keys
+
+    def build_privacy_budget_manager(
+        self,
+    ) -> ClientPrivacyBudgetManager | None:
+        if self.privacy_config.privacy_budgets is not None:
+            client_epsilons = list(self.privacy_config.privacy_budgets)
+        elif self.privacy_config.epsilon is not None:
+            client_epsilons = [
+                self.privacy_config.epsilon
+                for _ in range(self.args.num_clients)
+            ]
+        elif self.args.epsilon_max is not None:
+            client_epsilons = [
+                self.args.epsilon_max
+                for _ in range(self.args.num_clients)
+            ]
+        elif self.args.noise_multiplier is not None:
+            return None
+        else:
+            raise ValueError(
+                "FedDPA requires --epsilon_min, --epsilon_max, "
+                "--privacy_budgets, --privacy_scenario, or --noise_multiplier."
+            )
+        return ClientPrivacyBudgetManager.from_client_epsilons(
+            client_epsilons=client_epsilons,
+            delta=self.privacy_config.delta,
+            noise_multiplier=self.args.noise_multiplier,
+            epsilon_floor=self.args.epsilon_min,
+        )
+
+    def set_privacy_budget_context(
+        self,
+        context: Mapping[int, PrivacyBudgetContext],
+    ) -> None:
+        self.current_privacy_context = dict(context)
+
+    def privacy_budget_local_steps(self, train_loader: DataLoader) -> int:
+        return 2 * super().privacy_budget_local_steps(train_loader)
 
     def _estimate_fisher_masks(
         self,
@@ -484,41 +526,33 @@ class FedDPA(FederatedMethod):
     def begin_round(self, round_idx: int, selected_clients: Sequence[int]) -> None:
         del round_idx
         self.current_selected_clients = list(selected_clients)
-        self.current_selected_budgets = (
-            [
-                self.privacy_config.privacy_budgets[client_id]
+
+        if self.current_privacy_context:
+            self.current_selected_budgets = [
+                self.current_privacy_context[client_id].epsilon
                 for client_id in self.current_selected_clients
             ]
-            if self.privacy_config.privacy_budgets is not None
-            else []
-        )
-
-        if (
-            self.privacy_config.privacy_budgets is None
-            or self.args.noise_multiplier is not None
-        ):
+            self.current_epsilon = min(self.current_selected_budgets)
+            self.current_noise_multipliers = [
+                self.current_privacy_context[client_id].noise_multiplier
+                for client_id in self.current_selected_clients
+            ]
+            self.current_noise_multiplier = max(self.current_noise_multipliers)
+        else:
+            self.current_selected_budgets = (
+                [
+                    self.privacy_config.privacy_budgets[client_id]
+                    for client_id in self.current_selected_clients
+                ]
+                if self.privacy_config.privacy_budgets is not None
+                else []
+            )
             self.current_epsilon = self.privacy_config.epsilon
             self.current_noise_multiplier = self.privacy_config.noise_multiplier
             self.current_noise_multipliers = [
                 self.current_noise_multiplier
                 for _ in self.current_selected_clients
             ]
-            return
-
-        self.current_epsilon = min(self.current_selected_budgets)
-        noise_epsilons = (
-            [
-                max(epsilon, self.args.epsilon_min)
-                for epsilon in self.current_selected_budgets
-            ]
-            if self.args.epsilon_min is not None
-            else self.current_selected_budgets
-        )
-        self.current_noise_multipliers = [
-            gaussian_noise_multiplier(epsilon, self.privacy_config.delta)
-            for epsilon in noise_epsilons
-        ]
-        self.current_noise_multiplier = max(self.current_noise_multipliers)
 
     def config_rows(self) -> list[tuple[str, str, object]]:
         rows = super().config_rows()

@@ -6,9 +6,13 @@ from abc import ABC, abstractmethod
 from argparse import Namespace
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Callable, Dict, List, Sequence
+from typing import TYPE_CHECKING, Callable, Dict, List, Mapping, Sequence
 
 from adapl.methods.metadata import MethodInfo
+from adapl.privacy.accounting import (
+    ClientPrivacyBudgetManager,
+    PrivacyBudgetContext,
+)
 
 if TYPE_CHECKING:
     import torch
@@ -56,6 +60,34 @@ class FederatedMethod(ABC):
 
     def begin_round(self, round_idx: int, selected_clients: Sequence[int]) -> None:
         """Optional hook for methods with round-dependent state."""
+
+    def build_privacy_budget_manager(
+        self,
+    ) -> ClientPrivacyBudgetManager | None:
+        """Optional shared per-client privacy budget manager for DP-SGD methods."""
+        return None
+
+    def set_privacy_budget_context(
+        self,
+        context: Mapping[int, PrivacyBudgetContext],
+    ) -> None:
+        """Receive selected clients' accountant state before local training."""
+
+    def privacy_budget_local_steps(self, train_loader: DataLoader) -> int:
+        if self.args.local_update_mode == "random-batch":
+            return (
+                self.args.local_epochs
+                if self.args.local_epochs is not None
+                else self.args.local_steps
+            )
+        if self.args.local_update_mode == "full-epoch":
+            local_epochs = (
+                self.args.local_epochs
+                if self.args.local_epochs is not None
+                else self.args.local_steps
+            )
+            return local_epochs * len(train_loader)
+        raise ValueError(f"Unsupported local update mode: {self.args.local_update_mode}")
 
     @abstractmethod
     def train_client(

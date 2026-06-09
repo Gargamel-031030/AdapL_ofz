@@ -1,6 +1,11 @@
 """Differential privacy utilities for FL methods."""
 
-from adapl.privacy.accounting import gaussian_noise_multiplier
+from adapl.privacy.accounting import (
+    ClientPrivacyBudgetManager,
+    PrivacyBudgetAccountant,
+    PrivacyBudgetContext,
+    gaussian_noise_multiplier,
+)
 from adapl.privacy.budgets import parse_privacy_budgets, resolve_epsilon_min
 from adapl.privacy.config import (
     HeterogeneousBudgetConfig,
@@ -18,7 +23,10 @@ from adapl.privacy.levels import (
 __all__ = [
     "PAPER_LEVEL_BUDGETS",
     "PAPER_PRIVACY_SCENARIOS",
+    "ClientPrivacyBudgetManager",
     "HeterogeneousBudgetConfig",
+    "PrivacyBudgetAccountant",
+    "PrivacyBudgetContext",
     "PrivacyConfig",
     "build_heterogeneous_budget_config",
     "build_heterogeneous_privacy_config",

@@ -220,6 +220,12 @@ def init_output_csv(path: str) -> None:
                 "feddpa_fisher_personalized_ratio_mean",
                 "feddpa_fisher_personalized_ratio_min",
                 "feddpa_fisher_personalized_ratio_max",
+                "privacy_budget_accumulated_mean",
+                "privacy_budget_accumulated_min",
+                "privacy_budget_accumulated_max",
+                "privacy_budget_current_steps_mean",
+                "privacy_budget_active_clients",
+                "privacy_budget_finished_clients",
             ]
         )
 
@@ -277,6 +283,24 @@ def append_output_csv(
                 ),
                 _format_optional_metric(
                     round_metrics.get("feddpa_fisher_personalized_ratio_max")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("privacy_budget_accumulated_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("privacy_budget_accumulated_min")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("privacy_budget_accumulated_max")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("privacy_budget_current_steps_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("privacy_budget_active_clients")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("privacy_budget_finished_clients")
                 ),
             ]
         )

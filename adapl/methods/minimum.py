@@ -14,9 +14,12 @@ from adapl.fl.aggregation import fedavg_aggregate
 from adapl.fl.client import train_client_sgd
 from adapl.methods.base import ClientUpdate, FederatedMethod
 from adapl.methods.metadata import MINIMUM_INFO
-from adapl.privacy.accounting import gaussian_noise_multiplier
+from adapl.privacy.accounting import (
+    ClientPrivacyBudgetManager,
+    gaussian_noise_multiplier,
+)
 from adapl.privacy.config import PrivacyConfig, build_minimum_privacy_config
-from adapl.privacy.mechanisms import privatize_client_update
+from adapl.privacy.mechanisms import client_update_l2_norm
 
 
 class MinimumDPFedAvg(FederatedMethod):
@@ -28,7 +31,6 @@ class MinimumDPFedAvg(FederatedMethod):
         self.noise_generator = torch.Generator().manual_seed(args.seed + 10_000)
         self.current_epsilon = self.privacy_config.epsilon
         self.current_noise_multiplier = self.privacy_config.noise_multiplier
-        self.current_noise_std = self.privacy_config.noise_std
         self.current_selected_budgets: list[float] = []
         self.private_state_keys: tuple[str, ...] | None = None
 
@@ -40,6 +42,30 @@ class MinimumDPFedAvg(FederatedMethod):
                 if parameter.requires_grad
             )
         return self.private_state_keys
+
+    def build_privacy_budget_manager(
+        self,
+    ) -> ClientPrivacyBudgetManager | None:
+        if self.privacy_config.privacy_budgets is not None:
+            client_epsilons = list(self.privacy_config.privacy_budgets)
+        elif self.privacy_config.epsilon is not None:
+            client_epsilons = [
+                self.privacy_config.epsilon
+                for _ in range(self.args.num_clients)
+            ]
+        elif self.args.epsilon_max is not None:
+            client_epsilons = [
+                self.args.epsilon_max
+                for _ in range(self.args.num_clients)
+            ]
+        else:
+            return None
+        return ClientPrivacyBudgetManager.from_client_epsilons(
+            client_epsilons=client_epsilons,
+            delta=self.privacy_config.delta,
+            noise_multiplier=self.args.noise_multiplier,
+            epsilon_floor=self.args.epsilon_min,
+        )
 
     def startup_lines(self) -> list[str]:
         epsilon = (
@@ -87,7 +113,6 @@ class MinimumDPFedAvg(FederatedMethod):
         ):
             self.current_epsilon = self.privacy_config.epsilon
             self.current_noise_multiplier = self.privacy_config.noise_multiplier
-            self.current_noise_std = self.privacy_config.noise_std
             self.current_selected_budgets = []
             return
 
@@ -99,9 +124,6 @@ class MinimumDPFedAvg(FederatedMethod):
         self.current_noise_multiplier = gaussian_noise_multiplier(
             self.current_epsilon,
             self.privacy_config.delta,
-        )
-        self.current_noise_std = (
-            self.privacy_config.clipping_norm * self.current_noise_multiplier
         )
 
     def config_rows(self) -> list[tuple[str, str, object]]:
@@ -184,25 +206,25 @@ class MinimumDPFedAvg(FederatedMethod):
             momentum=self.args.momentum,
             weight_decay=self.args.weight_decay,
             device=device,
-        )
-        privatized = privatize_client_update(
-            global_state=global_state,
-            local_state=local_state,
             clipping_norm=self.privacy_config.clipping_norm,
-            noise_std=self.current_noise_std,
-            generator=self.noise_generator,
-            private_keys=self._private_keys(model_fn),
+            noise_multiplier=self.current_noise_multiplier,
+            noise_generator=self.noise_generator,
+        )
+        update_norm = client_update_l2_norm(
+            global_state,
+            local_state,
+            self._private_keys(model_fn),
         )
         return ClientUpdate(
             client_id=client_id,
-            state_dict=privatized.state_dict,
+            state_dict=local_state,
             train_loss=client_loss,
             num_examples=client_size,
             metadata={
-                "update_norm": privatized.update_norm,
-                "clipped_norm": privatized.clipped_norm,
-                "clip_factor": privatized.clip_factor,
-                "noise_std": privatized.noise_std,
+                "update_norm": update_norm,
+                "clipped_norm": min(update_norm, self.privacy_config.clipping_norm),
+                "clip_factor": min(1.0, self.privacy_config.clipping_norm / (update_norm + 1e-12)),
+                "noise_std": self.privacy_config.clipping_norm * self.current_noise_multiplier,
                 "epsilon_min": self.current_epsilon,
                 "delta": self.privacy_config.delta,
             },

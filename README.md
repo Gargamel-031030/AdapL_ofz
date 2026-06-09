@@ -97,9 +97,7 @@ python main.py \
 The current DP module clips each client's model update, adds Gaussian noise,
 and then aggregates privatized client updates. The default noise multiplier is
 computed from the classical single-release Gaussian mechanism bound when
-`--noise_multiplier` is not provided. Tighter multi-round accounting should be
-added under `adapl/privacy/accounting.py` when the experimental protocol needs
-formal composed privacy reports.
+`--noise_multiplier` is not provided.
 For ResNet models with BatchNorm, DP noise is applied to trainable parameters
 only; non-trainable BatchNorm buffers such as `running_var` are not noised to
 avoid invalid negative variances during evaluation.
@@ -109,6 +107,16 @@ For the paper privacy-level setup, levels map to maximum budgets
 `epsilon_min = min_{k in K_t} epsilon_k`, where `K_t` is the set of clients
 sampled in the current round. With 20 clients and sample rate 0.8, each round
 trains 16 clients.
+
+## Privacy Budget Accounting
+
+Privacy consumption is maintained by a shared per-client accountant in
+`adapl/privacy/accounting.py`, not inside WeiAvg or PFA-specific logic. Before
+each round, the runner prechecks every client budget and samples only clients
+whose next local training block still fits within their maximum epsilon. After
+local training completes, the runner updates each selected client's accumulated
+budget and step count. WeiAvg uses epsilon only for server aggregation weights;
+future PFA code should use epsilon only to classify public/private clients.
 
 ## Run The WeiAvg Baseline
 
