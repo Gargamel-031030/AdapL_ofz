@@ -47,17 +47,19 @@ WEIAVG_INFO = MethodInfo(
 )
 
 
-PLANNED_METHODS = [
-    MethodInfo(
-        canonical_name="feddpa",
-        aliases=("feddpa",),
-        display_name="FedDPA",
-        description=(
-            "Dynamic personalized FL with adaptive DP using Fisher information "
-            "to separate parameter importance."
-        ),
-        implemented=False,
+FEDDPA_INFO = MethodInfo(
+    canonical_name="feddpa",
+    aliases=("feddpa",),
+    display_name="FedDPA",
+    description=(
+        "Dynamic personalized FL with adaptive DP using Fisher information "
+        "to separate parameter importance."
     ),
+    implemented=True,
+)
+
+
+PLANNED_METHODS = [
     MethodInfo(
         canonical_name="ppfed",
         aliases=("ppfed",),
@@ -98,4 +100,10 @@ PLANNED_METHODS = [
 ]
 
 
-METHOD_INFOS = [PRIVACY_FREE_INFO, MINIMUM_INFO, WEIAVG_INFO, *PLANNED_METHODS]
+METHOD_INFOS = [
+    PRIVACY_FREE_INFO,
+    MINIMUM_INFO,
+    WEIAVG_INFO,
+    FEDDPA_INFO,
+    *PLANNED_METHODS,
+]

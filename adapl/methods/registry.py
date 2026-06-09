@@ -52,6 +52,10 @@ def build_method(method_name: str, args: Namespace) -> FederatedMethod:
         from adapl.methods.weiavg import WeiAvgFedAvg
 
         return WeiAvgFedAvg(args)
+    if info.canonical_name == "feddpa":
+        from adapl.methods.feddpa import FedDPA
+
+        return FedDPA(args)
 
     raise NotImplementedError(
         f"{info.display_name} is registered but not implemented yet. "

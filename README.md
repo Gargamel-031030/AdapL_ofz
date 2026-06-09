@@ -1,8 +1,8 @@
 # AdapL Federated Learning Experiments
 
 This project is structured for CIFAR-100 federated learning experiments.
-The current implemented method is `PF` / `PrivacyFree`, a no-DP FedAvg
-baseline with ResNet18.
+Implemented methods include privacy-free FedAvg, DP-FedAvg baselines, and
+FedDPA-style personalized DP-FL with ResNet18.
 
 ## Project Layout
 
@@ -55,9 +55,14 @@ Experiment outputs are also ignored by Git and default to:
 - `weiavg`, `weightedavg`, `weighted-avg`: budget-weighted FedAvg baseline
   where selected client deltas are aggregated with
   `epsilon_i / sum(epsilon_selected)`.
+- `feddpa`: FedDPA-style personalized DP-FL. Each selected client estimates a
+  diagonal Fisher mask, keeps high-importance parameters as persistent local
+  personalized state, trains personalized/shared parameter subsets separately,
+  and applies WeiAvg-style per-minibatch gradient clipping and Gaussian noise
+  before uploading the locally trained state for FedAvg aggregation.
 
 The following methods are registered as planned extension points but are not
-implemented yet: `feddpa`, `ppfed`, `pfa`, `efl`, `adapl`.
+implemented yet: `ppfed`, `pfa`, `efl`, `adapl`.
 
 ## Run A Smoke Test
 
@@ -120,6 +125,26 @@ For a selected client set `K_t`, the server computes
 `weight_i = epsilon_i / sum_{j in K_t} epsilon_j` and applies the weighted
 client update. Use `--method pf` with the same FL/data hyperparameters for the
 ordinary FedAvg comparison.
+
+## Run The FedDPA Baseline
+
+`FedDPA` requires DP calibration through `--epsilon_min`,
+`--privacy_scenario`, `--privacy_budgets`, or `--noise_multiplier`:
+
+```bash
+python main.py \
+  --method feddpa \
+  --privacy_scenario 3 \
+  --feddpa_fisher_threshold 0.4 \
+  --feddpa_fisher_batches 1
+```
+
+Use `--feddpa_fisher_batches 0` to estimate Fisher masks over each selected
+client's full loader. The default `1` is a practical approximation for faster
+CIFAR-100 screening. FedDPA applies DP noise during local training after each
+minibatch backward pass, using
+`noise_std = noise_multiplier * clipping_norm / batch_size`, matching the
+current WeiAvg DP path.
 
 ## Run The Min Stability Grid
 

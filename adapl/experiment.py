@@ -77,6 +77,10 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
         client_updates,
         "aggregation_weight",
     )
+    fisher_personalized_ratios = _float_metadata_values(
+        client_updates,
+        "fisher_personalized_ratio",
+    )
 
     metrics = {}
     if update_norms:
@@ -102,6 +106,16 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
         )
         metrics["aggregation_weight_min"] = min(aggregation_weights)
         metrics["aggregation_weight_max"] = max(aggregation_weights)
+    if fisher_personalized_ratios:
+        metrics["feddpa_fisher_personalized_ratio_mean"] = (
+            sum(fisher_personalized_ratios) / len(fisher_personalized_ratios)
+        )
+        metrics["feddpa_fisher_personalized_ratio_min"] = min(
+            fisher_personalized_ratios
+        )
+        metrics["feddpa_fisher_personalized_ratio_max"] = max(
+            fisher_personalized_ratios
+        )
     return metrics
 
 
@@ -120,6 +134,11 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
             f" eps_mean={metrics.get('dp_epsilon_mean', math.nan):.4f} "
             f"w_range=[{metrics.get('aggregation_weight_min', math.nan):.4f},"
             f"{metrics.get('aggregation_weight_max', math.nan):.4f}]"
+        )
+    if "feddpa_fisher_personalized_ratio_mean" in metrics:
+        text += (
+            " fisher_personal="
+            f"{metrics.get('feddpa_fisher_personalized_ratio_mean', math.nan):.4f}"
         )
     return text
 

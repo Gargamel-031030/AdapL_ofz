@@ -217,6 +217,9 @@ def init_output_csv(path: str) -> None:
                 "aggregation_weight_mean",
                 "aggregation_weight_min",
                 "aggregation_weight_max",
+                "feddpa_fisher_personalized_ratio_mean",
+                "feddpa_fisher_personalized_ratio_min",
+                "feddpa_fisher_personalized_ratio_max",
             ]
         )
 
@@ -266,5 +269,14 @@ def append_output_csv(
                 _format_optional_metric(round_metrics.get("aggregation_weight_mean")),
                 _format_optional_metric(round_metrics.get("aggregation_weight_min")),
                 _format_optional_metric(round_metrics.get("aggregation_weight_max")),
+                _format_optional_metric(
+                    round_metrics.get("feddpa_fisher_personalized_ratio_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("feddpa_fisher_personalized_ratio_min")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("feddpa_fisher_personalized_ratio_max")
+                ),
             ]
         )

@@ -79,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--use_dp",
         dest="no_dp",
         action="store_false",
-        help="Enable DP-oriented methods once implemented.",
+        help="Enable DP for methods that support or require it.",
     )
 
     parser.add_argument("--epsilon_min", type=float, default=None)
@@ -108,6 +108,36 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=41,
         help="Seed used to assign scenario privacy budgets to clients.",
+    )
+    parser.add_argument(
+        "--feddpa_fisher_threshold",
+        type=float,
+        default=0.4,
+        help=(
+            "FedDPA Fisher mask threshold in [0, 1]. Parameters with "
+            "normalized Fisher scores above this value remain personalized."
+        ),
+    )
+    parser.add_argument(
+        "--feddpa_fisher_batches",
+        type=int,
+        default=1,
+        help=(
+            "Number of local batches used to estimate FedDPA Fisher masks. "
+            "Use 0 to scan the full client loader."
+        ),
+    )
+    parser.add_argument(
+        "--feddpa_lambda1",
+        type=float,
+        default=0.05,
+        help="FedDPA regularization strength for personalized parameters.",
+    )
+    parser.add_argument(
+        "--feddpa_lambda2",
+        type=float,
+        default=0.1,
+        help="FedDPA regularization strength for shared parameters.",
     )
 
     parser.add_argument(

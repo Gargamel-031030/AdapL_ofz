@@ -63,9 +63,14 @@ def build_heterogeneous_budget_config(
     )
 
 
-def build_minimum_privacy_config(args: Namespace) -> PrivacyConfig:
+def build_minimum_privacy_config(
+    args: Namespace,
+    method_label: str = "Min / Minimum",
+) -> PrivacyConfig:
     if getattr(args, "no_dp", False):
-        raise ValueError("Min / Minimum requires DP. Remove --no_dp or use --method PF.")
+        raise ValueError(
+            f"{method_label} requires DP. Remove --no_dp or use --method PF."
+        )
 
     clipping_norm = args.clipping_norm
     if clipping_norm is None:
@@ -103,7 +108,7 @@ def build_minimum_privacy_config(args: Namespace) -> PrivacyConfig:
     else:
         if epsilon is None:
             raise ValueError(
-                "Min / Minimum requires --epsilon_min, --privacy_budgets, "
+                f"{method_label} requires --epsilon_min, --privacy_budgets, "
                 "or --noise_multiplier."
             )
         noise_multiplier = gaussian_noise_multiplier(epsilon, delta)
