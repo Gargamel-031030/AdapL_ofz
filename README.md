@@ -60,9 +60,13 @@ Experiment outputs are also ignored by Git and default to:
   personalized state, trains personalized/shared parameter subsets separately,
   and applies WeiAvg-style per-minibatch gradient clipping and Gaussian noise
   before uploading the locally trained state for FedAvg aggregation.
+- `pfa`: Projected Federated Averaging with heterogeneous privacy budgets.
+  High-epsilon clients define the public update subspace, and private-client
+  updates are projected through that subspace before aggregation. The default
+  aggregation is epsilon-weighted, matching the PFA+WeiAvg setting.
 
 The following methods are registered as planned extension points but are not
-implemented yet: `ppfed`, `pfa`, `efl`, `adapl`.
+implemented yet: `ppfed`, `efl`, `adapl`.
 
 ## Run A Smoke Test
 
@@ -115,8 +119,20 @@ Privacy consumption is maintained by a shared per-client accountant in
 each round, the runner prechecks every client budget and samples only clients
 whose next local training block still fits within their maximum epsilon. After
 local training completes, the runner updates each selected client's accumulated
-budget and step count. WeiAvg uses epsilon only for server aggregation weights;
-future PFA code should use epsilon only to classify public/private clients.
+budget and step count. WeiAvg uses epsilon for server aggregation weights; PFA
+uses epsilon to classify public/private clients and, by default, to weight
+projected aggregation.
+
+Use `--privacy_accounting auto|on|off` to control this process. The boolean
+aliases `--use_privacy_accounting` and `--no_privacy_accounting` map to `on`
+and `off`.
+
+- `auto` keeps each method's default behavior.
+- `on` forces per-client accounting for any method, including PF or `--no_dp`
+  runs, using `--privacy_budgets`, `--privacy_scenario`, `--epsilon_max`, or
+  `--epsilon_min` as the client maximum budgets.
+- `off` disables budget precheck/filter/update while leaving DP clipping/noise
+  behavior unchanged.
 
 ## Run The WeiAvg Baseline
 
@@ -153,6 +169,23 @@ CIFAR-100 screening. FedDPA applies DP noise during local training after each
 minibatch backward pass, using
 `noise_std = noise_multiplier * clipping_norm / batch_size`, matching the
 current WeiAvg DP path.
+
+## Run The PFA Baseline
+
+`PFA` requires heterogeneous client privacy budgets. It uses the highest-budget
+clients as public clients, retries sampling to include both public and private
+clients when possible, and projects private updates through the public update
+subspace:
+
+```bash
+python main.py \
+  --method pfa \
+  --privacy_scenario 3 \
+  --pfa_projection_dim 1 \
+  --pfa_public_fraction 0.1
+```
+
+Use `--no-pfa_weighted_projection` for count-weighted projected averaging.
 
 ## Run The Min Stability Grid
 

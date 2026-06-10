@@ -89,6 +89,24 @@ class FederatedMethod(ABC):
             return local_epochs * len(train_loader)
         raise ValueError(f"Unsupported local update mode: {self.args.local_update_mode}")
 
+    def select_clients(
+        self,
+        num_clients: int,
+        client_fraction: float,
+        round_idx: int,
+        seed: int,
+        candidate_client_ids: Sequence[int] | None = None,
+    ) -> List[int]:
+        from adapl.fl.sampling import select_clients
+
+        return select_clients(
+            num_clients=num_clients,
+            client_fraction=client_fraction,
+            round_idx=round_idx,
+            seed=seed,
+            candidate_client_ids=candidate_client_ids,
+        )
+
     @abstractmethod
     def train_client(
         self,

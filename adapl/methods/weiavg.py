@@ -17,6 +17,7 @@ from adapl.methods.metadata import WEIAVG_INFO
 from adapl.privacy.accounting import (
     ClientPrivacyBudgetManager,
     PrivacyBudgetContext,
+    gaussian_noise_multiplier,
 )
 from adapl.privacy.config import (
     HeterogeneousBudgetConfig,
@@ -94,6 +95,14 @@ class WeiAvgFedAvg(FederatedMethod):
             epsilon_floor=self.user_epsilon_min,
         )
 
+    def _noise_multiplier_for_budget(self, epsilon: float) -> float:
+        if self.user_noise_multiplier is not None:
+            return self.user_noise_multiplier
+        noise_epsilon = float(epsilon)
+        if self.user_epsilon_min is not None:
+            noise_epsilon = max(noise_epsilon, self.user_epsilon_min)
+        return gaussian_noise_multiplier(noise_epsilon, self.delta)
+
     def set_privacy_budget_context(
         self,
         context: Mapping[int, PrivacyBudgetContext],
@@ -155,14 +164,16 @@ class WeiAvgFedAvg(FederatedMethod):
             self.current_selected_budgets
         )
         if not self.no_dp:
-            if not self.current_privacy_context:
-                raise RuntimeError(
-                    "Privacy budget context must be set before WeiAvg DP training."
-                )
-            self.current_noise_multipliers = [
-                self.current_privacy_context[client_id].noise_multiplier
-                for client_id in self.current_selected_clients
-            ]
+            if self.current_privacy_context:
+                self.current_noise_multipliers = [
+                    self.current_privacy_context[client_id].noise_multiplier
+                    for client_id in self.current_selected_clients
+                ]
+            else:
+                self.current_noise_multipliers = [
+                    self._noise_multiplier_for_budget(epsilon)
+                    for epsilon in self.current_selected_budgets
+                ]
         else:
             self.current_noise_multipliers = [0.0] * len(self.current_selected_budgets)
 

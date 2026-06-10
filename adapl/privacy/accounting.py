@@ -10,6 +10,9 @@ from dataclasses import dataclass, field
 import math
 from typing import Mapping, Sequence
 
+from adapl.privacy.budgets import parse_privacy_budgets
+from adapl.privacy.levels import build_privacy_scenario
+
 DEFAULT_RDP_ORDERS = (
     [1 + x / 10.0 for x in range(1, 100)] + list(range(11, 65))
 )
@@ -81,7 +84,7 @@ class PrivacyBudgetAccountant:
         if local_steps < 0:
             raise ValueError("local_steps must be non-negative.")
 
-        q = batch_size / dataset_size
+        q = min(1.0, batch_size / dataset_size)
         tmp_steps = self.current_steps + local_steps
         tmp_budget = compute_epsilon_from_rdp(
             steps=tmp_steps,
@@ -236,6 +239,68 @@ class ClientPrivacyBudgetManager:
     @property
     def num_clients(self) -> int:
         return len(self.accountants)
+
+
+def _arg_value(args: object, name: str, default: object = None) -> object:
+    return getattr(args, name, default)
+
+
+def resolve_accounting_client_epsilons(args: object) -> list[float]:
+    """Resolve per-client maximum epsilon values for budget accounting."""
+    num_clients = int(_arg_value(args, "num_clients"))
+    if num_clients <= 0:
+        raise ValueError("--num_clients must be positive.")
+
+    privacy_budgets = parse_privacy_budgets(
+        _arg_value(args, "privacy_budgets")
+    )
+    if privacy_budgets is None and _arg_value(args, "privacy_scenario") is not None:
+        scenario = build_privacy_scenario(
+            scenario=str(_arg_value(args, "privacy_scenario")),
+            num_clients=num_clients,
+            seed=int(_arg_value(args, "privacy_budget_seed", 41)),
+        )
+        privacy_budgets = list(scenario.client_budgets)
+
+    if privacy_budgets is None:
+        epsilon_max = _arg_value(args, "epsilon_max")
+        epsilon_min = _arg_value(args, "epsilon_min")
+        if epsilon_max is not None:
+            privacy_budgets = [float(epsilon_max) for _ in range(num_clients)]
+        elif epsilon_min is not None:
+            privacy_budgets = [float(epsilon_min) for _ in range(num_clients)]
+        else:
+            raise ValueError(
+                "Privacy accounting requires --privacy_budgets, "
+                "--privacy_scenario, --epsilon_max, or --epsilon_min."
+            )
+
+    if len(privacy_budgets) != num_clients:
+        raise ValueError(
+            "The number of accounting privacy budgets must match --num_clients "
+            f"({len(privacy_budgets)} != {num_clients})."
+        )
+    return [float(epsilon) for epsilon in privacy_budgets]
+
+
+def build_privacy_budget_manager_from_args(
+    args: object,
+) -> ClientPrivacyBudgetManager:
+    """Build a generic per-client privacy budget manager from CLI arguments."""
+    client_epsilons = resolve_accounting_client_epsilons(args)
+    delta = _arg_value(args, "delta")
+    if delta is None:
+        delta = 1e-5
+    noise_multiplier = _arg_value(args, "noise_multiplier")
+    epsilon_floor = _arg_value(args, "epsilon_min")
+    return ClientPrivacyBudgetManager.from_client_epsilons(
+        client_epsilons=client_epsilons,
+        delta=float(delta),
+        noise_multiplier=(
+            None if noise_multiplier is None else float(noise_multiplier)
+        ),
+        epsilon_floor=None if epsilon_floor is None else float(epsilon_floor),
+    )
 
 
 def validate_epsilon_delta(epsilon: float, delta: float) -> None:

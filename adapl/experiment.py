@@ -15,9 +15,9 @@ from adapl.data import (
 )
 from adapl.fl.evaluation import evaluate
 from adapl.fl.loaders import make_test_loader, make_train_loaders
-from adapl.fl.sampling import select_clients
 from adapl.methods import build_method
 from adapl.models.resnet import build_model_fn, validate_model_output
+from adapl.privacy.accounting import build_privacy_budget_manager_from_args
 from adapl.reporting import (
     append_output_csv,
     init_output_csv,
@@ -81,6 +81,11 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
         client_updates,
         "fisher_personalized_ratio",
     )
+    pfa_public_flags = [
+        bool(update.metadata["pfa_is_public"])
+        for update in client_updates
+        if "pfa_is_public" in update.metadata
+    ]
     privacy_budget_accumulated = _float_metadata_values(
         client_updates,
         "privacy_budget_accumulated",
@@ -124,6 +129,10 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
         metrics["feddpa_fisher_personalized_ratio_max"] = max(
             fisher_personalized_ratios
         )
+    if pfa_public_flags:
+        pfa_public_clients = sum(1 for is_public in pfa_public_flags if is_public)
+        metrics["pfa_public_clients"] = pfa_public_clients
+        metrics["pfa_private_clients"] = len(pfa_public_flags) - pfa_public_clients
     if privacy_budget_accumulated:
         metrics["privacy_budget_accumulated_mean"] = (
             sum(privacy_budget_accumulated) / len(privacy_budget_accumulated)
@@ -158,6 +167,12 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
             " fisher_personal="
             f"{metrics.get('feddpa_fisher_personalized_ratio_mean', math.nan):.4f}"
         )
+    if "pfa_public_clients" in metrics:
+        text += (
+            " pfa_public/private="
+            f"{int(metrics.get('pfa_public_clients', 0))}/"
+            f"{int(metrics.get('pfa_private_clients', 0))}"
+        )
     if "privacy_budget_accumulated_mean" in metrics:
         text += (
             " budget="
@@ -174,7 +189,12 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
 def run_experiment(args: Namespace) -> None:
     _validate_args(args)
     method = build_method(args.method, args)
-    privacy_budget_manager = method.build_privacy_budget_manager()
+    privacy_accounting_mode = getattr(args, "privacy_accounting", "auto")
+    privacy_budget_manager = None
+    if privacy_accounting_mode != "off":
+        privacy_budget_manager = method.build_privacy_budget_manager()
+        if privacy_budget_manager is None and privacy_accounting_mode == "on":
+            privacy_budget_manager = build_privacy_budget_manager_from_args(args)
 
     set_random_seed(args.seed)
     device = resolve_device(args.device)
@@ -288,12 +308,15 @@ def run_experiment(args: Namespace) -> None:
     if args.run_config_json:
         print(f"Run config JSON saved to: {args.run_config_json}")
     print(f"Run config CSV saved to: {args.run_config_csv}")
+    print(f"Privacy accounting mode: {privacy_accounting_mode}")
     if privacy_budget_manager is not None:
         print(
             "Privacy budget accountant: "
             f"enabled for {privacy_budget_manager.num_clients} clients, "
             "precheck_filter=before_sampling"
         )
+    else:
+        print("Privacy budget accountant: disabled")
     for line in method.startup_lines():
         print(line)
 
@@ -314,11 +337,11 @@ def run_experiment(args: Namespace) -> None:
                 )
                 break
 
-        selected_clients = select_clients(
-            args.num_clients,
-            args.client_fraction,
-            round_idx,
-            args.seed,
+        selected_clients = method.select_clients(
+            num_clients=args.num_clients,
+            client_fraction=args.client_fraction,
+            round_idx=round_idx,
+            seed=args.seed,
             candidate_client_ids=candidate_client_ids,
         )
         if not selected_clients:

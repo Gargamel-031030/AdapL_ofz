@@ -16,6 +16,7 @@ from adapl.methods.metadata import FEDDPA_INFO
 from adapl.privacy.accounting import (
     ClientPrivacyBudgetManager,
     PrivacyBudgetContext,
+    gaussian_noise_multiplier,
 )
 from adapl.privacy.config import PrivacyConfig, build_minimum_privacy_config
 from adapl.privacy.mechanisms import client_update_l2_norm
@@ -454,6 +455,14 @@ class FedDPA(FederatedMethod):
             and self.args.noise_multiplier is None
         )
 
+    def _noise_multiplier_for_budget(self, epsilon: float) -> float:
+        if self.args.noise_multiplier is not None:
+            return self.privacy_config.noise_multiplier
+        noise_epsilon = float(epsilon)
+        if self.args.epsilon_min is not None:
+            noise_epsilon = max(noise_epsilon, self.args.epsilon_min)
+        return gaussian_noise_multiplier(noise_epsilon, self.privacy_config.delta)
+
     def _noise_multiplier_config_value(self) -> object:
         if self._uses_per_client_noise():
             return "per_client"
@@ -548,11 +557,18 @@ class FedDPA(FederatedMethod):
                 else []
             )
             self.current_epsilon = self.privacy_config.epsilon
-            self.current_noise_multiplier = self.privacy_config.noise_multiplier
-            self.current_noise_multipliers = [
-                self.current_noise_multiplier
-                for _ in self.current_selected_clients
-            ]
+            if self._uses_per_client_noise() and self.current_selected_budgets:
+                self.current_noise_multipliers = [
+                    self._noise_multiplier_for_budget(epsilon)
+                    for epsilon in self.current_selected_budgets
+                ]
+                self.current_noise_multiplier = max(self.current_noise_multipliers)
+            else:
+                self.current_noise_multiplier = self.privacy_config.noise_multiplier
+                self.current_noise_multipliers = [
+                    self.current_noise_multiplier
+                    for _ in self.current_selected_clients
+                ]
 
     def config_rows(self) -> list[tuple[str, str, object]]:
         rows = super().config_rows()

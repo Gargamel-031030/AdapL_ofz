@@ -59,6 +59,19 @@ FEDDPA_INFO = MethodInfo(
 )
 
 
+PFA_INFO = MethodInfo(
+    canonical_name="pfa",
+    aliases=("pfa",),
+    display_name="PFA / Projected Federated Averaging",
+    description=(
+        "Projected FedAvg that separates high-budget public clients and "
+        "low-budget private clients, then projects private updates through "
+        "the public-update subspace."
+    ),
+    implemented=True,
+)
+
+
 PLANNED_METHODS = [
     MethodInfo(
         canonical_name="ppfed",
@@ -67,16 +80,6 @@ PLANNED_METHODS = [
         description=(
             "Privacy-preserving personalized FL that separates global and local "
             "model parts and aggregates only global parameters."
-        ),
-        implemented=False,
-    ),
-    MethodInfo(
-        canonical_name="pfa",
-        aliases=("pfa",),
-        display_name="PFA / Projected Federated Averaging",
-        description=(
-            "Projected FedAvg that separates public and private clients and "
-            "maps private updates using public updates."
         ),
         implemented=False,
     ),
@@ -105,5 +108,6 @@ METHOD_INFOS = [
     MINIMUM_INFO,
     WEIAVG_INFO,
     FEDDPA_INFO,
+    PFA_INFO,
     *PLANNED_METHODS,
 ]

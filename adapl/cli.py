@@ -103,6 +103,32 @@ def build_parser() -> argparse.ArgumentParser:
             "over levels with budgets 0.5/1/2/4/8."
         ),
     )
+    privacy_accounting_group = parser.add_mutually_exclusive_group()
+    privacy_accounting_group.add_argument(
+        "--privacy_accounting",
+        default="auto",
+        choices=["auto", "on", "off"],
+        help=(
+            "Privacy budget consumption accounting mode. auto preserves each "
+            "method's default behavior, on forces per-client accounting for "
+            "any method using epsilon/privacy budgets, and off disables "
+            "accounting while leaving DP noise behavior unchanged."
+        ),
+    )
+    privacy_accounting_group.add_argument(
+        "--use_privacy_accounting",
+        dest="privacy_accounting",
+        action="store_const",
+        const="on",
+        help="Alias for --privacy_accounting on.",
+    )
+    privacy_accounting_group.add_argument(
+        "--no_privacy_accounting",
+        dest="privacy_accounting",
+        action="store_const",
+        const="off",
+        help="Alias for --privacy_accounting off.",
+    )
     parser.add_argument(
         "--privacy_budget_seed",
         type=int,
@@ -138,6 +164,30 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.1,
         help="FedDPA regularization strength for shared parameters.",
+    )
+    parser.add_argument(
+        "--pfa_public_fraction",
+        type=float,
+        default=0.1,
+        help="Fraction of highest-epsilon clients treated as PFA public clients.",
+    )
+    parser.add_argument(
+        "--pfa_projection_dim",
+        type=int,
+        default=1,
+        help="Number of public-update principal directions used by PFA.",
+    )
+    parser.add_argument(
+        "--pfa_weighted_projection",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use epsilon-weighted public/private projected aggregation in PFA.",
+    )
+    parser.add_argument(
+        "--pfa_selection_attempts",
+        type=int,
+        default=50,
+        help="Maximum client-sampling retries to include public and private clients.",
     )
 
     parser.add_argument(
