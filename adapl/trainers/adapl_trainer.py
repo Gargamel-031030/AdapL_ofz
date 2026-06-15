@@ -47,6 +47,38 @@ def _trainable_named_parameters(model: nn.Module) -> list[tuple[str, nn.Paramete
     ]
 
 
+def _batch_norm_modules(model: nn.Module) -> list[nn.Module]:
+    return [
+        module
+        for module in model.modules()
+        if isinstance(module, nn.modules.batchnorm._BatchNorm)
+    ]
+
+
+def _update_batch_norm_once_and_freeze(
+    model: nn.Module,
+    inputs: torch.Tensor,
+) -> list[tuple[nn.Module, bool]]:
+    batch_norm_modules = _batch_norm_modules(model)
+    states = [(module, module.training) for module in batch_norm_modules]
+    if not batch_norm_modules:
+        return states
+
+    for module in batch_norm_modules:
+        module.train(True)
+    with torch.no_grad():
+        model(inputs)
+    model.zero_grad(set_to_none=True)
+    for module in batch_norm_modules:
+        module.train(False)
+    return states
+
+
+def _restore_batch_norm_training(states: list[tuple[nn.Module, bool]]) -> None:
+    for module, training in states:
+        module.train(training)
+
+
 def _planned_minibatches(
     train_loader: DataLoader,
     local_steps: int,
@@ -127,32 +159,36 @@ def _per_sample_clipped_batch_gradient(
     clipped_norm_sum = 0.0
     clip_factor_sum = 0.0
 
-    for sample_idx in range(batch_size):
-        model.zero_grad(set_to_none=True)
-        logits = model(inputs[sample_idx : sample_idx + 1])
-        loss = criterion(logits, targets[sample_idx : sample_idx + 1])
-        loss.backward()
-        total_loss += float(loss.item())
+    batch_norm_states = _update_batch_norm_once_and_freeze(model, inputs)
+    try:
+        for sample_idx in range(batch_size):
+            model.zero_grad(set_to_none=True)
+            logits = model(inputs[sample_idx : sample_idx + 1])
+            loss = criterion(logits, targets[sample_idx : sample_idx + 1])
+            loss.backward()
+            total_loss += float(loss.item())
 
-        sample_grads: dict[str, torch.Tensor] = {}
-        squared_norm = 0.0
-        for name, parameter in named_parameters:
-            if parameter.grad is None:
-                continue
-            grad = parameter.grad.detach().clone()
-            sample_grads[name] = grad
-            squared_norm += float(torch.sum(grad.double() * grad.double()).item())
+            sample_grads: dict[str, torch.Tensor] = {}
+            squared_norm = 0.0
+            for name, parameter in named_parameters:
+                if parameter.grad is None:
+                    continue
+                grad = parameter.grad.detach().clone()
+                sample_grads[name] = grad
+                squared_norm += float(torch.sum(grad.double() * grad.double()).item())
 
-        grad_norm = squared_norm ** 0.5
-        clip_factor = min(1.0, clipping_bound / (grad_norm + 1e-12))
-        grad_norm_sum += grad_norm
-        clipped_norm_sum += min(grad_norm, clipping_bound)
-        clip_factor_sum += clip_factor
-        for name, grad in sample_grads.items():
-            batch_grads[name].add_(grad, alpha=clip_factor)
+            grad_norm = squared_norm ** 0.5
+            clip_factor = min(1.0, clipping_bound / (grad_norm + 1e-12))
+            grad_norm_sum += grad_norm
+            clipped_norm_sum += min(grad_norm, clipping_bound)
+            clip_factor_sum += clip_factor
+            for name, grad in sample_grads.items():
+                batch_grads[name].add_(grad, alpha=clip_factor)
 
-    for grad in batch_grads.values():
-        grad.div_(float(batch_size))
+        for grad in batch_grads.values():
+            grad.div_(float(batch_size))
+    finally:
+        _restore_batch_norm_training(batch_norm_states)
 
     model.zero_grad(set_to_none=True)
     return (
