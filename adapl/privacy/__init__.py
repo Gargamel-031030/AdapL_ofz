@@ -8,6 +8,7 @@ from adapl.privacy.accounting import (
     gaussian_noise_multiplier,
     resolve_accounting_client_epsilons,
 )
+from adapl.privacy.accountant import MomentsAccountant, epsilon_from_log_moments
 from adapl.privacy.budgets import parse_privacy_budgets, resolve_epsilon_min
 from adapl.privacy.config import (
     HeterogeneousBudgetConfig,
@@ -27,6 +28,7 @@ __all__ = [
     "PAPER_PRIVACY_SCENARIOS",
     "ClientPrivacyBudgetManager",
     "HeterogeneousBudgetConfig",
+    "MomentsAccountant",
     "PrivacyBudgetAccountant",
     "PrivacyBudgetContext",
     "PrivacyConfig",
@@ -35,6 +37,7 @@ __all__ = [
     "build_privacy_budget_manager_from_args",
     "build_privacy_scenario",
     "build_minimum_privacy_config",
+    "epsilon_from_log_moments",
     "gaussian_noise_multiplier",
     "parse_privacy_budgets",
     "resolve_accounting_client_epsilons",

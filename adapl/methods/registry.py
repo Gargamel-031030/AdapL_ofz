@@ -60,6 +60,10 @@ def build_method(method_name: str, args: Namespace) -> FederatedMethod:
         from adapl.methods.pfa import PFAFedAvg
 
         return PFAFedAvg(args)
+    if info.canonical_name == "adapl":
+        from adapl.methods.adapl import AdapL
+
+        return AdapL(args)
 
     raise NotImplementedError(
         f"{info.display_name} is registered but not implemented yet. "

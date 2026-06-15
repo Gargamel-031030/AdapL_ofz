@@ -71,7 +71,21 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     clipped_norms = _float_metadata_values(client_updates, "clipped_norm")
     clip_factors = _float_metadata_values(client_updates, "clip_factor")
     noise_stds = _float_metadata_values(client_updates, "noise_std")
+    actual_minibatch_steps = _float_metadata_values(
+        client_updates,
+        "actual_minibatch_steps",
+    )
+    noise_multipliers = _float_metadata_values(client_updates, "noise_multiplier")
+    noise_multiplier_mins = _float_metadata_values(
+        client_updates,
+        "noise_multiplier_min",
+    )
+    noise_multiplier_maxs = _float_metadata_values(
+        client_updates,
+        "noise_multiplier_max",
+    )
     client_epsilons = _float_metadata_values(client_updates, "epsilon")
+    epsilon_targets = _float_metadata_values(client_updates, "epsilon_target")
     epsilons = _float_metadata_values(client_updates, "epsilon_min")
     aggregation_weights = _float_metadata_values(
         client_updates,
@@ -107,9 +121,31 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
         metrics["dp_clip_factor_min"] = min(clip_factors)
     if noise_stds:
         metrics["dp_noise_std_mean"] = sum(noise_stds) / len(noise_stds)
+    if actual_minibatch_steps:
+        metrics["actual_minibatch_steps_min"] = min(actual_minibatch_steps)
+        metrics["actual_minibatch_steps_max"] = max(actual_minibatch_steps)
+        metrics["actual_minibatch_steps_mean"] = (
+            sum(actual_minibatch_steps) / len(actual_minibatch_steps)
+        )
+    if noise_multipliers:
+        metrics["noise_multiplier_min"] = (
+            min(noise_multiplier_mins) if noise_multiplier_mins else min(noise_multipliers)
+        )
+        metrics["noise_multiplier_max"] = (
+            max(noise_multiplier_maxs) if noise_multiplier_maxs else max(noise_multipliers)
+        )
+        metrics["noise_multiplier_mean"] = (
+            sum(noise_multipliers) / len(noise_multipliers)
+        )
     if client_epsilons:
         metrics["selected_epsilons"] = _format_float_sequence(client_epsilons)
+        metrics["epsilon_distribution"] = _format_float_sequence(client_epsilons)
         metrics["dp_epsilon_mean"] = sum(client_epsilons) / len(client_epsilons)
+        metrics["dp_epsilon_max"] = max(client_epsilons)
+    if epsilon_targets:
+        metrics["epsilon_targets"] = _format_float_sequence(epsilon_targets)
+        metrics["epsilon_target_min"] = min(epsilon_targets)
+        metrics["epsilon_target_max"] = max(epsilon_targets)
     if epsilons:
         metrics["dp_epsilon_min"] = min(epsilons)
     if aggregation_weights:
@@ -143,6 +179,15 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
         metrics["privacy_budget_current_steps_mean"] = (
             sum(privacy_budget_current_steps) / len(privacy_budget_current_steps)
         )
+    privacy_scenarios = sorted(
+        {
+            str(update.metadata["privacy_scenario"])
+            for update in client_updates
+            if update.metadata.get("privacy_scenario")
+        }
+    )
+    if privacy_scenarios:
+        metrics["privacy_scenario"] = " ".join(privacy_scenarios)
     return metrics
 
 
@@ -178,6 +223,16 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
             " budget="
             f"{metrics.get('privacy_budget_accumulated_mean', math.nan):.4f}"
         )
+    if "actual_minibatch_steps_mean" in metrics:
+        text += (
+            " actual_steps="
+            f"{metrics.get('actual_minibatch_steps_mean', math.nan):.2f}"
+        )
+    if "noise_multiplier_mean" in metrics:
+        text += (
+            " nm="
+            f"{metrics.get('noise_multiplier_mean', math.nan):.4f}"
+        )
     if "privacy_budget_active_clients" in metrics:
         text += (
             " active_clients="
@@ -189,9 +244,12 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
 def run_experiment(args: Namespace) -> None:
     _validate_args(args)
     method = build_method(args.method, args)
+    method_uses_internal_accountant = bool(
+        getattr(method, "uses_internal_privacy_accountant", False)
+    )
     privacy_accounting_mode = getattr(args, "privacy_accounting", "auto")
     privacy_budget_manager = None
-    if privacy_accounting_mode != "off":
+    if privacy_accounting_mode != "off" and not method_uses_internal_accountant:
         privacy_budget_manager = method.build_privacy_budget_manager()
         if privacy_budget_manager is None and privacy_accounting_mode == "on":
             privacy_budget_manager = build_privacy_budget_manager_from_args(args)
@@ -266,6 +324,8 @@ def run_experiment(args: Namespace) -> None:
         batch_size=args.test_batch_size,
         num_workers=args.num_workers,
     )
+    if hasattr(method, "prepare_privacy_accountants"):
+        method.prepare_privacy_accountants(train_loaders)
 
     global_model = model_fn().to(device)
     global_state = clone_state_dict(global_model.state_dict())
@@ -309,7 +369,13 @@ def run_experiment(args: Namespace) -> None:
         print(f"Run config JSON saved to: {args.run_config_json}")
     print(f"Run config CSV saved to: {args.run_config_csv}")
     print(f"Privacy accounting mode: {privacy_accounting_mode}")
-    if privacy_budget_manager is not None:
+    if method_uses_internal_accountant:
+        print(
+            "Privacy budget accountant: "
+            f"enabled internally for {method.num_accountants} clients, "
+            "precheck_filter=before_sampling"
+        )
+    elif privacy_budget_manager is not None:
         print(
             "Privacy budget accountant: "
             f"enabled for {privacy_budget_manager.num_clients} clients, "
@@ -323,7 +389,17 @@ def run_experiment(args: Namespace) -> None:
     final_test_acc = math.nan
     for round_idx in range(1, args.global_rounds + 1):
         candidate_client_ids = None
-        if privacy_budget_manager is not None:
+        if method_uses_internal_accountant:
+            candidate_client_ids = method.eligible_client_ids(
+                list(range(args.num_clients))
+            )
+            if not candidate_client_ids:
+                print(
+                    f"Round {round_idx:03d}/{args.global_rounds} skipped: "
+                    "all client privacy budgets are exhausted."
+                )
+                break
+        elif privacy_budget_manager is not None:
             candidate_client_ids = privacy_budget_manager.eligible_client_ids(
                 client_ids=list(range(args.num_clients)),
                 dataset_sizes=privacy_dataset_sizes,
@@ -379,8 +455,17 @@ def run_experiment(args: Namespace) -> None:
 
         total_examples = sum(update.num_examples for update in client_updates)
         train_loss = weighted_loss_sum / float(total_examples)
+        global_state = method.aggregate(client_updates)
+        global_model.load_state_dict(global_state)
         round_metrics = _summarize_round_metadata(client_updates)
-        if privacy_budget_manager is not None:
+        if method_uses_internal_accountant:
+            round_metrics["privacy_budget_finished_clients"] = (
+                method.num_finished_accountants
+            )
+            round_metrics["privacy_budget_active_clients"] = (
+                method.num_accountants - method.num_finished_accountants
+            )
+        elif privacy_budget_manager is not None:
             round_metrics["privacy_budget_finished_clients"] = (
                 privacy_budget_manager.num_finished
             )
@@ -388,12 +473,13 @@ def run_experiment(args: Namespace) -> None:
                 privacy_budget_manager.num_clients
                 - privacy_budget_manager.num_finished
             )
-        global_state = method.aggregate(client_updates)
-        global_model.load_state_dict(global_state)
 
         if round_idx % args.eval_every == 0 or round_idx == args.global_rounds:
             test_loss, test_accuracy = evaluate(global_model, test_loader, device)
             final_test_acc = test_accuracy
+            if hasattr(method, "observe_global_accuracy"):
+                decayed = method.observe_global_accuracy(global_state, test_accuracy)
+                round_metrics["adapl_sigma_decayed"] = 1.0 if decayed else 0.0
         else:
             test_loss, test_accuracy = math.nan, math.nan
 

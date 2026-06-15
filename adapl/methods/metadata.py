@@ -72,6 +72,18 @@ PFA_INFO = MethodInfo(
 )
 
 
+ADAPL_INFO = MethodInfo(
+    canonical_name="adapl",
+    aliases=("adapl", "ours"),
+    display_name="AdapL / Ours",
+    description=(
+        "Adaptive local DP-FL with per-sample clipping, per-minibatch "
+        "masked Gaussian noise, Fisher masks, and moments accounting."
+    ),
+    implemented=True,
+)
+
+
 PLANNED_METHODS = [
     MethodInfo(
         canonical_name="ppfed",
@@ -93,13 +105,6 @@ PLANNED_METHODS = [
         ),
         implemented=False,
     ),
-    MethodInfo(
-        canonical_name="adapl",
-        aliases=("adapl", "ours"),
-        display_name="AdapL / Ours",
-        description="Project method placeholder for the final adaptive algorithm.",
-        implemented=False,
-    ),
 ]
 
 
@@ -109,5 +114,6 @@ METHOD_INFOS = [
     WEIAVG_INFO,
     FEDDPA_INFO,
     PFA_INFO,
+    ADAPL_INFO,
     *PLANNED_METHODS,
 ]
