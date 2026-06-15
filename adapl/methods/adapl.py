@@ -18,6 +18,7 @@ from adapl.methods.metadata import ADAPL_INFO
 from adapl.privacy.accountant import MomentsAccountant
 from adapl.privacy.budgets import parse_privacy_budgets
 from adapl.privacy.levels import PrivacyScenario, build_privacy_scenario
+from adapl.privacy.mechanisms import client_update_l2_norm
 from adapl.privacy.noise import initialize_noise_multiplier
 from adapl.trainers.adapl_trainer import local_update_decay, local_update_first
 from adapl.utils import clone_state_dict
@@ -348,6 +349,7 @@ class AdapL(FederatedMethod):
             raise RuntimeError(
                 "Accountant committed steps do not match the local trainer result."
             )
+        update_norm = client_update_l2_norm(global_state, result.state_dict)
 
         return ClientUpdate(
             client_id=client_id,
@@ -375,6 +377,7 @@ class AdapL(FederatedMethod):
                 "base_noise_multiplier": privacy_state.noise_multiplier,
                 "noise_source": privacy_state.noise_source,
                 "noise_std": result.noise_std_mean,
+                "update_norm": update_norm,
                 "clipped_norm": result.sample_clipped_norm_mean,
                 "clip_factor": result.sample_clip_factor_mean,
                 "layer_clip_factor": result.layer_clip_factor_mean,
