@@ -170,7 +170,13 @@ class AdapL(FederatedMethod):
 
     @property
     def num_finished_accountants(self) -> int:
-        return sum(1 for accountant in self.accountants.values() if accountant.finished)
+        return self.num_accountants - self.num_active_accountants
+
+    @property
+    def num_active_accountants(self) -> int:
+        if not self.accountants:
+            return 0
+        return len(self.eligible_client_ids(list(self.accountants.keys())))
 
     @property
     def num_accountants(self) -> int:

@@ -463,7 +463,7 @@ def run_experiment(args: Namespace) -> None:
                 method.num_finished_accountants
             )
             round_metrics["privacy_budget_active_clients"] = (
-                method.num_accountants - method.num_finished_accountants
+                method.num_active_accountants
             )
         elif privacy_budget_manager is not None:
             round_metrics["privacy_budget_finished_clients"] = (
