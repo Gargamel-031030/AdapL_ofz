@@ -32,6 +32,10 @@ from adapl.utils import clone_state_dict, resolve_device, set_random_seed
 
 
 def _validate_args(args: Namespace) -> None:
+    if not hasattr(args, "early_stop_patience"):
+        args.early_stop_patience = None
+    if not hasattr(args, "early_stop_min_delta"):
+        args.early_stop_min_delta = 0.0
     if args.global_rounds <= 0:
         raise ValueError("--global_rounds must be positive.")
     if args.eval_every <= 0:
@@ -44,6 +48,10 @@ def _validate_args(args: Namespace) -> None:
         raise ValueError("--batch_size must be positive.")
     if args.test_batch_size <= 0:
         raise ValueError("--test_batch_size must be positive.")
+    if args.early_stop_patience is not None and args.early_stop_patience <= 0:
+        raise ValueError("--early_stop_patience must be positive.")
+    if args.early_stop_min_delta < 0:
+        raise ValueError("--early_stop_min_delta must be non-negative.")
 
 
 def _format_selected_clients(selected_clients: Sequence[int]) -> str:
@@ -387,6 +395,12 @@ def run_experiment(args: Namespace) -> None:
         print(line)
 
     final_test_acc = math.nan
+    last_test_acc = math.nan
+    best_test_acc = -math.inf
+    best_test_loss = math.nan
+    best_test_round: int | None = None
+    best_global_state = None
+    evaluations_since_best = 0
     for round_idx in range(1, args.global_rounds + 1):
         candidate_client_ids = None
         if method_uses_internal_accountant:
@@ -476,12 +490,34 @@ def run_experiment(args: Namespace) -> None:
 
         if round_idx % args.eval_every == 0 or round_idx == args.global_rounds:
             test_loss, test_accuracy = evaluate(global_model, test_loader, device)
+            last_test_acc = test_accuracy
             final_test_acc = test_accuracy
             if hasattr(method, "observe_global_accuracy"):
                 decayed = method.observe_global_accuracy(global_state, test_accuracy)
                 round_metrics["adapl_sigma_decayed"] = 1.0 if decayed else 0.0
+            is_best_round = (
+                math.isfinite(test_accuracy)
+                and (
+                    best_test_round is None
+                    or test_accuracy > best_test_acc + args.early_stop_min_delta
+                )
+            )
+            if is_best_round:
+                best_test_acc = test_accuracy
+                best_test_loss = test_loss
+                best_test_round = round_idx
+                best_global_state = clone_state_dict(global_state)
+                evaluations_since_best = 0
+            elif math.isfinite(test_accuracy):
+                evaluations_since_best += 1
+            round_metrics["is_best_round"] = 1.0 if is_best_round else 0.0
         else:
             test_loss, test_accuracy = math.nan, math.nan
+            round_metrics["is_best_round"] = 0.0
+
+        if best_test_round is not None:
+            round_metrics["best_test_accuracy"] = best_test_acc
+            round_metrics["best_test_round"] = best_test_round
 
         append_output_csv(
             args.output_csv,
@@ -500,6 +536,25 @@ def run_experiment(args: Namespace) -> None:
             f"test_acc={test_accuracy:.4f}"
             f"{_format_round_metadata(round_metrics)}"
         )
+        if (
+            args.early_stop_patience is not None
+            and evaluations_since_best >= args.early_stop_patience
+        ):
+            print(
+                f"Early stopping at round {round_idx:03d}: "
+                f"no new best accuracy for {evaluations_since_best} evaluations."
+            )
+            break
+
+    if best_global_state is not None and best_test_round is not None:
+        global_state = clone_state_dict(best_global_state)
+        global_model.load_state_dict(global_state)
+        final_test_acc = best_test_acc
+        print(
+            f"Best test accuracy: {best_test_acc:.4f} "
+            f"(round {best_test_round}, test_loss={best_test_loss:.4f})"
+        )
+        print(f"Last evaluated test accuracy: {last_test_acc:.4f}")
 
     print(f"Final test accuracy: {final_test_acc:.4f}")
     print(f"Metrics saved to: {args.output_csv}")
@@ -509,5 +564,8 @@ def run_experiment(args: Namespace) -> None:
         method.config_rows(),
         client_label_distribution,
         final_test_accuracy=final_test_acc,
+        best_test_accuracy=best_test_acc if best_test_round is not None else None,
+        best_test_round=best_test_round,
+        last_test_accuracy=last_test_acc if math.isfinite(last_test_acc) else None,
     )
     print(f"Run summary CSV saved to: {args.run_config_csv}")

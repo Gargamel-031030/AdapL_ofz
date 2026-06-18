@@ -373,6 +373,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--eval_every", type=int, default=1)
     parser.add_argument(
+        "--early_stop_patience",
+        type=int,
+        default=None,
+        help=(
+            "Optional number of evaluated rounds to wait without a new best "
+            "test accuracy before stopping. Disabled by default."
+        ),
+    )
+    parser.add_argument(
+        "--early_stop_min_delta",
+        type=float,
+        default=0.0,
+        help="Minimum test-accuracy improvement required to reset early stopping.",
+    )
+    parser.add_argument(
         "--limit_train_samples",
         type=int,
         default=None,
@@ -453,6 +468,10 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("--adapl_noise_decay_factor/--decay_factor must be positive.")
     if args.max_clip_norm is not None and args.max_clip_norm <= 0:
         raise ValueError("--max_clip_norm must be positive.")
+    if args.early_stop_patience is not None and args.early_stop_patience <= 0:
+        raise ValueError("--early_stop_patience must be positive.")
+    if args.early_stop_min_delta < 0:
+        raise ValueError("--early_stop_min_delta must be non-negative.")
 
     if args.output_csv is None:
         args.output_csv = _default_output_csv(args)

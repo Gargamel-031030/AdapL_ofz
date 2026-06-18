@@ -139,6 +139,9 @@ def save_run_config_csv(
     method_rows: Sequence[tuple[str, str, object]],
     client_distribution: Sequence[Dict[str, object]],
     final_test_accuracy: Optional[float] = None,
+    best_test_accuracy: Optional[float] = None,
+    best_test_round: Optional[int] = None,
+    last_test_accuracy: Optional[float] = None,
 ) -> None:
     ensure_parent_dir(path)
 
@@ -185,6 +188,12 @@ def save_run_config_csv(
 
     if final_test_accuracy is not None:
         rows.append(("result", "final_test_accuracy", f"{final_test_accuracy:.6f}"))
+    if best_test_accuracy is not None:
+        rows.append(("result", "best_test_accuracy", f"{best_test_accuracy:.6f}"))
+    if best_test_round is not None:
+        rows.append(("result", "best_test_round", best_test_round))
+    if last_test_accuracy is not None:
+        rows.append(("result", "last_test_accuracy", f"{last_test_accuracy:.6f}"))
 
     with open(path, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
@@ -241,6 +250,9 @@ def init_output_csv(path: str) -> None:
                 "privacy_budget_current_steps_mean",
                 "privacy_budget_active_clients",
                 "privacy_budget_finished_clients",
+                "best_test_accuracy",
+                "best_test_round",
+                "is_best_round",
             ]
         )
 
@@ -338,5 +350,8 @@ def append_output_csv(
                 _format_optional_metric(
                     round_metrics.get("privacy_budget_finished_clients")
                 ),
+                _format_optional_metric(round_metrics.get("best_test_accuracy")),
+                _format_optional_metric(round_metrics.get("best_test_round")),
+                _format_optional_metric(round_metrics.get("is_best_round")),
             ]
         )
