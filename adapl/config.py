@@ -20,6 +20,34 @@ from adapl.methods import canonicalize_method, method_choices
 from adapl.paths import DEFAULT_CIFAR100_DIR, DEFAULT_RESULTS_DIR, resolve_project_path
 
 
+def _parse_int_list(raw_value: str | Sequence[int], option_name: str) -> list[int]:
+    if isinstance(raw_value, str):
+        if not raw_value.strip():
+            return []
+        values = [item.strip() for item in raw_value.split(",")]
+    else:
+        values = list(raw_value)
+    try:
+        parsed = [int(value) for value in values if str(value).strip()]
+    except ValueError as exc:
+        raise ValueError(f"{option_name} must be a comma-separated integer list.") from exc
+    return parsed
+
+
+def _parse_float_list(raw_value: str | Sequence[float], option_name: str) -> list[float]:
+    if isinstance(raw_value, str):
+        if not raw_value.strip():
+            return []
+        values = [item.strip() for item in raw_value.split(",")]
+    else:
+        values = list(raw_value)
+    try:
+        parsed = [float(value) for value in values if str(value).strip()]
+    except ValueError as exc:
+        raise ValueError(f"{option_name} must be a comma-separated float list.") from exc
+    return parsed
+
+
 def _default_output_csv(args: argparse.Namespace) -> str:
     partition_name = "noniid" if args.partition in {"dirichlet", "non-iid"} else "iid"
     local_tag = (
@@ -366,6 +394,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--test_batch_size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=CIFAR100_MAIN_LR)
+    parser.add_argument(
+        "--lr_schedule",
+        choices=["constant", "piecewise"],
+        default="constant",
+        help=(
+            "Global-round learning-rate schedule. constant preserves the "
+            "single --lr value. piecewise uses --lr_milestones and --lr_values."
+        ),
+    )
+    parser.add_argument(
+        "--lr_milestones",
+        default="",
+        help=(
+            "Comma-separated completed global rounds where the piecewise "
+            "learning rate switches, e.g. 20,40 means rounds 1-20 use the "
+            "first value, 21-40 the second, and 41+ the third."
+        ),
+    )
+    parser.add_argument(
+        "--lr_values",
+        default="",
+        help=(
+            "Comma-separated learning rates for --lr_schedule piecewise. "
+            "Length must be len(--lr_milestones)+1, e.g. 0.03,0.01,0.005."
+        ),
+    )
     parser.add_argument("--momentum", type=float, default=CIFAR100_MAIN_MOMENTUM)
     parser.add_argument("--weight_decay", type=float, default=CIFAR100_MAIN_WEIGHT_DECAY)
     parser.add_argument("--num_workers", type=int, default=4)
@@ -468,6 +522,29 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("--adapl_noise_decay_factor/--decay_factor must be positive.")
     if args.max_clip_norm is not None and args.max_clip_norm <= 0:
         raise ValueError("--max_clip_norm must be positive.")
+    if args.lr <= 0:
+        raise ValueError("--lr must be positive.")
+    args.lr_milestones = _parse_int_list(args.lr_milestones, "--lr_milestones")
+    args.lr_values = _parse_float_list(args.lr_values, "--lr_values")
+    if args.lr_milestones or args.lr_values:
+        args.lr_schedule = "piecewise"
+    if args.lr_schedule == "piecewise":
+        if not args.lr_milestones:
+            raise ValueError("--lr_schedule piecewise requires --lr_milestones.")
+        if any(milestone <= 0 for milestone in args.lr_milestones):
+            raise ValueError("--lr_milestones must contain positive round numbers.")
+        if args.lr_milestones != sorted(set(args.lr_milestones)):
+            raise ValueError("--lr_milestones must be strictly increasing.")
+        if len(args.lr_values) != len(args.lr_milestones) + 1:
+            raise ValueError(
+                "--lr_values length must equal len(--lr_milestones)+1."
+            )
+        if any(value <= 0 for value in args.lr_values):
+            raise ValueError("--lr_values must contain positive learning rates.")
+        args.lr = args.lr_values[0]
+    else:
+        args.lr_milestones = []
+        args.lr_values = []
     if args.early_stop_patience is not None and args.early_stop_patience <= 0:
         raise ValueError("--early_stop_patience must be positive.")
     if args.early_stop_min_delta < 0:

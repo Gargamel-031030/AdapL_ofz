@@ -450,6 +450,12 @@ class AdapL(FederatedMethod):
         if not math.isfinite(test_accuracy):
             return False
 
+        previous_best = (
+            max(self.test_accuracy_history)
+            if self.test_accuracy_history
+            else -math.inf
+        )
+        is_new_best = test_accuracy > previous_best
         should_decay = False
         if len(self.test_accuracy_history) >= 2:
             previous = self.test_accuracy_history[-1]
@@ -457,14 +463,15 @@ class AdapL(FederatedMethod):
             should_decay = (
                 test_accuracy >= previous
                 and previous >= previous_previous
-                and test_accuracy > max(self.test_accuracy_history)
+                and is_new_best
             )
 
         self.test_accuracy_history.append(float(test_accuracy))
+        if is_new_best:
+            self.latest_global_state = clone_state_dict(global_state)
         if not should_decay:
             return False
 
-        self.latest_global_state = clone_state_dict(global_state)
         for client_id, privacy_state in list(self.client_privacy.items()):
             new_sigma = (
                 privacy_state.noise_multiplier

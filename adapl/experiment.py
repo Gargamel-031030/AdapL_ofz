@@ -36,6 +36,12 @@ def _validate_args(args: Namespace) -> None:
         args.early_stop_patience = None
     if not hasattr(args, "early_stop_min_delta"):
         args.early_stop_min_delta = 0.0
+    if not hasattr(args, "lr_schedule"):
+        args.lr_schedule = "constant"
+    if not hasattr(args, "lr_milestones"):
+        args.lr_milestones = []
+    if not hasattr(args, "lr_values"):
+        args.lr_values = []
     if args.global_rounds <= 0:
         raise ValueError("--global_rounds must be positive.")
     if args.eval_every <= 0:
@@ -48,6 +54,15 @@ def _validate_args(args: Namespace) -> None:
         raise ValueError("--batch_size must be positive.")
     if args.test_batch_size <= 0:
         raise ValueError("--test_batch_size must be positive.")
+    if args.lr <= 0:
+        raise ValueError("--lr must be positive.")
+    if args.lr_schedule not in {"constant", "piecewise"}:
+        raise ValueError("--lr_schedule must be constant or piecewise.")
+    if args.lr_schedule == "piecewise":
+        if len(args.lr_values) != len(args.lr_milestones) + 1:
+            raise ValueError(
+                "--lr_values length must equal len(--lr_milestones)+1."
+            )
     if args.early_stop_patience is not None and args.early_stop_patience <= 0:
         raise ValueError("--early_stop_patience must be positive.")
     if args.early_stop_min_delta < 0:
@@ -74,6 +89,24 @@ def _format_float_sequence(values: list[float]) -> str:
     return " ".join(f"{value:.6g}" for value in values)
 
 
+def _learning_rate_for_round(args: Namespace, round_idx: int) -> float:
+    if getattr(args, "lr_schedule", "constant") != "piecewise":
+        return float(args.lr)
+
+    milestones = list(getattr(args, "lr_milestones", []))
+    values = list(getattr(args, "lr_values", []))
+    if not milestones or not values:
+        return float(args.lr)
+
+    value_index = 0
+    for milestone in milestones:
+        if round_idx > int(milestone):
+            value_index += 1
+        else:
+            break
+    return float(values[min(value_index, len(values) - 1)])
+
+
 def _summarize_round_metadata(client_updates) -> dict[str, object]:
     update_norms = _float_metadata_values(client_updates, "update_norm")
     clipped_norms = _float_metadata_values(client_updates, "clipped_norm")
@@ -94,7 +127,6 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     )
     client_epsilons = _float_metadata_values(client_updates, "epsilon")
     epsilon_targets = _float_metadata_values(client_updates, "epsilon_target")
-    epsilons = _float_metadata_values(client_updates, "epsilon_min")
     aggregation_weights = _float_metadata_values(
         client_updates,
         "aggregation_weight",
@@ -149,13 +181,12 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
         metrics["selected_epsilons"] = _format_float_sequence(client_epsilons)
         metrics["epsilon_distribution"] = _format_float_sequence(client_epsilons)
         metrics["dp_epsilon_mean"] = sum(client_epsilons) / len(client_epsilons)
+        metrics["dp_epsilon_min"] = min(client_epsilons)
         metrics["dp_epsilon_max"] = max(client_epsilons)
     if epsilon_targets:
         metrics["epsilon_targets"] = _format_float_sequence(epsilon_targets)
         metrics["epsilon_target_min"] = min(epsilon_targets)
         metrics["epsilon_target_max"] = max(epsilon_targets)
-    if epsilons:
-        metrics["dp_epsilon_min"] = min(epsilons)
     if aggregation_weights:
         metrics["aggregation_weights"] = _format_float_sequence(aggregation_weights)
         metrics["aggregation_weight_mean"] = (
@@ -246,6 +277,8 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
             " active_clients="
             f"{int(metrics.get('privacy_budget_active_clients', 0))}"
         )
+    if "learning_rate" in metrics:
+        text += f" lr={metrics.get('learning_rate', math.nan):.6g}"
     return text
 
 
@@ -367,6 +400,11 @@ def run_experiment(args: Namespace) -> None:
         f"Learning rate: {args.lr}, momentum: {args.momentum}, "
         f"weight_decay: {args.weight_decay}"
     )
+    if getattr(args, "lr_schedule", "constant") == "piecewise":
+        print(
+            "Learning-rate schedule: "
+            f"piecewise milestones={args.lr_milestones}, values={args.lr_values}"
+        )
     print(f"Partition: {args.partition}")
     print(f"Dirichlet alpha: {args.dirichlet_alpha}")
     log_client_label_distribution(client_label_distribution)
@@ -401,7 +439,10 @@ def run_experiment(args: Namespace) -> None:
     best_test_round: int | None = None
     best_global_state = None
     evaluations_since_best = 0
+    initial_lr = float(args.lr)
     for round_idx in range(1, args.global_rounds + 1):
+        current_lr = _learning_rate_for_round(args, round_idx)
+        args.lr = current_lr
         candidate_client_ids = None
         if method_uses_internal_accountant:
             candidate_client_ids = method.eligible_client_ids(
@@ -472,6 +513,7 @@ def run_experiment(args: Namespace) -> None:
         global_state = method.aggregate(client_updates)
         global_model.load_state_dict(global_state)
         round_metrics = _summarize_round_metadata(client_updates)
+        round_metrics["learning_rate"] = current_lr
         if method_uses_internal_accountant:
             round_metrics["privacy_budget_finished_clients"] = (
                 method.num_finished_accountants
@@ -495,20 +537,23 @@ def run_experiment(args: Namespace) -> None:
             if hasattr(method, "observe_global_accuracy"):
                 decayed = method.observe_global_accuracy(global_state, test_accuracy)
                 round_metrics["adapl_sigma_decayed"] = 1.0 if decayed else 0.0
-            is_best_round = (
-                math.isfinite(test_accuracy)
-                and (
-                    best_test_round is None
-                    or test_accuracy > best_test_acc + args.early_stop_min_delta
-                )
+            previous_best_acc = best_test_acc
+            has_evaluation = math.isfinite(test_accuracy)
+            is_best_round = has_evaluation and (
+                best_test_round is None or test_accuracy > previous_best_acc
+            )
+            resets_early_stop = has_evaluation and (
+                best_test_round is None
+                or test_accuracy > previous_best_acc + args.early_stop_min_delta
             )
             if is_best_round:
                 best_test_acc = test_accuracy
                 best_test_loss = test_loss
                 best_test_round = round_idx
                 best_global_state = clone_state_dict(global_state)
+            if resets_early_stop:
                 evaluations_since_best = 0
-            elif math.isfinite(test_accuracy):
+            elif has_evaluation:
                 evaluations_since_best += 1
             round_metrics["is_best_round"] = 1.0 if is_best_round else 0.0
         else:
@@ -542,9 +587,13 @@ def run_experiment(args: Namespace) -> None:
         ):
             print(
                 f"Early stopping at round {round_idx:03d}: "
-                f"no new best accuracy for {evaluations_since_best} evaluations."
+                "no accuracy improvement of at least "
+                f"{args.early_stop_min_delta:g} for "
+                f"{evaluations_since_best} evaluations."
             )
             break
+
+    args.lr = initial_lr
 
     if best_global_state is not None and best_test_round is not None:
         global_state = clone_state_dict(best_global_state)
