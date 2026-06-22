@@ -224,6 +224,7 @@ def init_output_csv(path: str) -> None:
                 "dp_clipped_norm_mean",
                 "dp_clip_factor_mean",
                 "dp_clip_factor_min",
+                "dp_proximal_norm_mean",
                 "dp_noise_std_mean",
                 "actual_minibatch_steps_min",
                 "actual_minibatch_steps_max",
@@ -301,6 +302,7 @@ def append_output_csv(
                 _format_optional_metric(round_metrics.get("dp_clipped_norm_mean")),
                 _format_optional_metric(round_metrics.get("dp_clip_factor_mean")),
                 _format_optional_metric(round_metrics.get("dp_clip_factor_min")),
+                _format_optional_metric(round_metrics.get("dp_proximal_norm_mean")),
                 _format_optional_metric(round_metrics.get("dp_noise_std_mean")),
                 _format_optional_metric(
                     round_metrics.get("actual_minibatch_steps_min")

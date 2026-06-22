@@ -42,6 +42,8 @@ def _validate_args(args: Namespace) -> None:
         args.lr_milestones = []
     if not hasattr(args, "lr_values"):
         args.lr_values = []
+    if not hasattr(args, "prox_mu"):
+        args.prox_mu = 0.0
     if args.global_rounds <= 0:
         raise ValueError("--global_rounds must be positive.")
     if args.eval_every <= 0:
@@ -54,6 +56,8 @@ def _validate_args(args: Namespace) -> None:
         raise ValueError("--batch_size must be positive.")
     if args.test_batch_size <= 0:
         raise ValueError("--test_batch_size must be positive.")
+    if args.prox_mu < 0:
+        raise ValueError("--prox_mu must be non-negative.")
     if args.lr <= 0:
         raise ValueError("--lr must be positive.")
     if args.lr_schedule not in {"constant", "piecewise"}:
@@ -111,6 +115,7 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     update_norms = _float_metadata_values(client_updates, "update_norm")
     clipped_norms = _float_metadata_values(client_updates, "clipped_norm")
     clip_factors = _float_metadata_values(client_updates, "clip_factor")
+    proximal_norms = _float_metadata_values(client_updates, "proximal_norm")
     noise_stds = _float_metadata_values(client_updates, "noise_std")
     actual_minibatch_steps = _float_metadata_values(
         client_updates,
@@ -159,6 +164,8 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     if clip_factors:
         metrics["dp_clip_factor_mean"] = sum(clip_factors) / len(clip_factors)
         metrics["dp_clip_factor_min"] = min(clip_factors)
+    if proximal_norms:
+        metrics["dp_proximal_norm_mean"] = sum(proximal_norms) / len(proximal_norms)
     if noise_stds:
         metrics["dp_noise_std_mean"] = sum(noise_stds) / len(noise_stds)
     if actual_minibatch_steps:
@@ -267,6 +274,8 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
             " actual_steps="
             f"{metrics.get('actual_minibatch_steps_mean', math.nan):.2f}"
         )
+    if "dp_proximal_norm_mean" in metrics:
+        text += f" prox={metrics.get('dp_proximal_norm_mean', math.nan):.4f}"
     if "noise_multiplier_mean" in metrics:
         text += (
             " nm="

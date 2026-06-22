@@ -219,6 +219,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional AdapL decay-stage per-layer clipping norm.",
     )
+    parser.add_argument(
+        "--prox_mu",
+        type=float,
+        default=0.0,
+        help=(
+            "Optional FedProx-style local proximal strength for AdapL. "
+            "0 disables the proximal term."
+        ),
+    )
     nm_decay_group = parser.add_mutually_exclusive_group()
     nm_decay_group.add_argument(
         "--nm_decay",
@@ -522,6 +531,8 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("--adapl_noise_decay_factor/--decay_factor must be positive.")
     if args.max_clip_norm is not None and args.max_clip_norm <= 0:
         raise ValueError("--max_clip_norm must be positive.")
+    if args.prox_mu < 0:
+        raise ValueError("--prox_mu must be non-negative.")
     if args.lr <= 0:
         raise ValueError("--lr must be positive.")
     args.lr_milestones = _parse_int_list(args.lr_milestones, "--lr_milestones")

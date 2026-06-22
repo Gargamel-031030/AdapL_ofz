@@ -60,6 +60,8 @@ class AdapL(FederatedMethod):
             raise ValueError("--adapl_noise_decay_factor/--decay_factor must be positive.")
         if args.max_clip_norm is not None and args.max_clip_norm <= 0:
             raise ValueError("--max_clip_norm must be positive.")
+        if args.prox_mu < 0:
+            raise ValueError("--prox_mu must be non-negative.")
 
         self.privacy_scenario: PrivacyScenario | None = None
         self.client_target_epsilons = self._resolve_client_epsilons()
@@ -195,6 +197,7 @@ class AdapL(FederatedMethod):
                 f"adapl_alpha={self.args.adapl_alpha}, "
                 f"adapl_noise_decay_factor={self.args.adapl_noise_decay_factor}, "
                 f"max_clip_norm={self.args.max_clip_norm}, "
+                f"prox_mu={self.args.prox_mu}, "
                 f"nm_decay={self.args.nm_decay}"
             )
         ]
@@ -232,6 +235,7 @@ class AdapL(FederatedMethod):
                     self.args.adapl_noise_decay_factor,
                 ),
                 ("adapl", "max_clip_norm", self.args.max_clip_norm),
+                ("adapl", "prox_mu", self.args.prox_mu),
                 ("adapl", "nm_decay", self.args.nm_decay),
             ]
         )
@@ -267,6 +271,7 @@ class AdapL(FederatedMethod):
             "adapl_alpha": self.args.adapl_alpha,
             "adapl_noise_decay_factor": self.args.adapl_noise_decay_factor,
             "max_clip_norm": self.args.max_clip_norm,
+            "prox_mu": self.args.prox_mu,
             "nm_decay": self.args.nm_decay,
         }
         if self.privacy_scenario is not None:
@@ -319,6 +324,7 @@ class AdapL(FederatedMethod):
                 clipping_bound=self.args.clipping_norm,
                 base_noise_multiplier=privacy_state.noise_multiplier,
                 gamma=self.args.gamma,
+                prox_mu=self.args.prox_mu,
             )
             update_phase = "first"
         else:
@@ -341,6 +347,7 @@ class AdapL(FederatedMethod):
                 fisher_estimator=self.args.fisher_estimator,
                 fisher_batches=self.args.fisher_batches,
                 max_clip_norm=self.args.max_clip_norm,
+                prox_mu=self.args.prox_mu,
             )
             update_phase = "decay"
 
@@ -387,6 +394,8 @@ class AdapL(FederatedMethod):
                 "clipped_norm": result.sample_clipped_norm_mean,
                 "clip_factor": result.sample_clip_factor_mean,
                 "layer_clip_factor": result.layer_clip_factor_mean,
+                "prox_mu": self.args.prox_mu,
+                "proximal_norm": result.proximal_norm_mean,
                 "fisher_threshold": self.args.fisher_threshold,
                 "fisher_estimator": self.args.fisher_estimator,
                 "fisher_important_ratio": result.important_ratio,

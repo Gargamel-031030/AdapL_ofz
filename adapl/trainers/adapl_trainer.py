@@ -30,6 +30,7 @@ class AdapLTrainResult:
     sample_clipped_norm_mean: float
     sample_clip_factor_mean: float
     layer_clip_factor_mean: float
+    proximal_norm_mean: float
     noise_std_mean: float
     noise_multiplier_min: float
     noise_multiplier_max: float
@@ -224,6 +225,31 @@ def _apply_decay_layer_clipping(
     return factor_sum / max(1, count)
 
 
+def _apply_proximal_gradient(
+    batch_grads: Mapping[str, torch.Tensor],
+    model: nn.Module,
+    reference_state: Mapping[str, torch.Tensor],
+    prox_mu: float,
+) -> float:
+    if prox_mu < 0:
+        raise ValueError("prox_mu must be non-negative.")
+    if prox_mu == 0:
+        return 0.0
+
+    squared_norm = 0.0
+    for name, parameter in model.named_parameters():
+        if not parameter.requires_grad or name not in batch_grads:
+            continue
+        reference = reference_state.get(name)
+        if reference is None:
+            continue
+        reference = reference.to(device=parameter.device, dtype=parameter.dtype)
+        proximal_grad = parameter.detach() - reference
+        batch_grads[name].add_(proximal_grad, alpha=prox_mu)
+        squared_norm += float(torch.sum(proximal_grad.double() * proximal_grad.double()).item())
+    return squared_norm ** 0.5
+
+
 def _mask_summary(masks: Mapping[str, torch.Tensor]) -> tuple[float, int, int]:
     important = 0
     total = 0
@@ -316,6 +342,8 @@ def _run_adapl_update(
     masks: Mapping[str, torch.Tensor],
     fisher_mean_by_layer: Mapping[str, float],
     max_clip_norm: float | None,
+    global_reference_state: Mapping[str, torch.Tensor],
+    prox_mu: float,
 ) -> AdapLTrainResult:
     model.train()
     criterion = nn.CrossEntropyLoss()
@@ -338,6 +366,7 @@ def _run_adapl_update(
     sample_clip_factor_sum = 0.0
     sample_count = 0.0
     layer_clip_factor_sum = 0.0
+    proximal_norm_sum = 0.0
     noise_std_sum = 0.0
     noise_multiplier_min_values: list[float] = []
     noise_multiplier_max_values: list[float] = []
@@ -358,6 +387,12 @@ def _run_adapl_update(
                 device=device,
                 clipping_bound=clipping_bound,
             )
+        )
+        proximal_norm_sum += _apply_proximal_gradient(
+            batch_grads=batch_grads,
+            model=model,
+            reference_state=global_reference_state,
+            prox_mu=prox_mu,
         )
         layer_clip_factor = _apply_decay_layer_clipping(batch_grads, max_clip_norm)
         stats_by_layer = layerwise_noise_stats(
@@ -400,6 +435,7 @@ def _run_adapl_update(
         sample_clipped_norm_mean=sample_clipped_norm_sum / max(1.0, sample_count),
         sample_clip_factor_mean=sample_clip_factor_sum / max(1.0, sample_count),
         layer_clip_factor_mean=layer_clip_factor_sum / max(1, actual_steps),
+        proximal_norm_mean=proximal_norm_sum / max(1, actual_steps),
         noise_std_mean=noise_std_sum / max(1, actual_steps),
         noise_multiplier_min=min(noise_multiplier_min_values),
         noise_multiplier_max=max(noise_multiplier_max_values),
@@ -426,6 +462,7 @@ def local_update_first(
     clipping_bound: float,
     base_noise_multiplier: float,
     gamma: float,
+    prox_mu: float,
 ) -> AdapLTrainResult:
     model = model_fn().to(device)
     model.load_state_dict(global_state)
@@ -451,6 +488,8 @@ def local_update_first(
         masks=masks,
         fisher_mean_by_layer=fisher_mean_by_layer,
         max_clip_norm=None,
+        global_reference_state=global_state,
+        prox_mu=prox_mu,
     )
 
 
@@ -474,6 +513,7 @@ def local_update_decay(
     fisher_estimator: str,
     fisher_batches: int,
     max_clip_norm: float | None,
+    prox_mu: float,
 ) -> AdapLTrainResult:
     fisher_model = model_fn().to(device)
     fisher_model.load_state_dict(latest_global_state)
@@ -506,4 +546,6 @@ def local_update_decay(
         masks=masks,
         fisher_mean_by_layer=fisher_mean_by_layer,
         max_clip_norm=max_clip_norm,
+        global_reference_state=global_state,
+        prox_mu=prox_mu,
     )
