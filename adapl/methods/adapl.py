@@ -13,6 +13,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from adapl.federated.aggregation import aggregate_state_dicts
+from adapl.fl.client import train_client_sgd
 from adapl.methods.base import ClientUpdate, FederatedMethod
 from adapl.methods.metadata import ADAPL_INFO
 from adapl.privacy.accountant import MomentsAccountant
@@ -40,12 +41,21 @@ class AdapL(FederatedMethod):
 
     def __init__(self, args: Namespace) -> None:
         super().__init__(args)
-        if getattr(args, "no_dp", False):
-            raise ValueError("AdapL requires DP. Remove --no_dp.")
-        if args.clipping_norm is None or args.clipping_norm <= 0:
-            raise ValueError("--clipping_bound/--clipping_norm must be positive.")
-        if args.delta is None or not 0 < args.delta < 1:
-            raise ValueError("--target_delta/--delta must be in (0, 1).")
+        self.dp_enabled = not bool(getattr(args, "no_dp", False))
+        self.disable_noise = bool(getattr(args, "adapl_disable_noise", False))
+        self.disable_clipping = bool(getattr(args, "adapl_disable_clipping", False))
+        self.disable_fisher = bool(getattr(args, "adapl_disable_fisher", False))
+        self.noise_scope = str(getattr(args, "adapl_noise_scope", "fisher"))
+        self.freeze_batch_norm = bool(getattr(args, "adapl_freeze_bn", False))
+        self.accounting_enabled = (
+            self.dp_enabled and not self.disable_noise and not self.disable_clipping
+        )
+        self.uses_internal_privacy_accountant = self.accounting_enabled
+        if self.dp_enabled:
+            if args.clipping_norm is None or args.clipping_norm <= 0:
+                raise ValueError("--clipping_bound/--clipping_norm must be positive.")
+            if args.delta is None or not 0 < args.delta < 1:
+                raise ValueError("--target_delta/--delta must be in (0, 1).")
         if not 0 <= args.fisher_threshold <= 1:
             raise ValueError("--fisher_threshold must be in [0, 1].")
         if args.fisher_estimator not in {"sample", "batch"}:
@@ -62,9 +72,13 @@ class AdapL(FederatedMethod):
             raise ValueError("--max_clip_norm must be positive.")
         if args.prox_mu < 0:
             raise ValueError("--prox_mu must be non-negative.")
+        if self.noise_scope not in {"fisher", "all"}:
+            raise ValueError("--adapl_noise_scope/--noise_scope must be fisher or all.")
 
         self.privacy_scenario: PrivacyScenario | None = None
-        self.client_target_epsilons = self._resolve_client_epsilons()
+        self.client_target_epsilons = (
+            self._resolve_client_epsilons() if self.dp_enabled else []
+        )
         self.client_privacy: dict[int, _ClientPrivacyState] = {}
         self.accountants: dict[int, MomentsAccountant] = {}
         self.planned_steps_by_client: dict[int, int] = {}
@@ -127,6 +141,8 @@ class AdapL(FederatedMethod):
         self.client_privacy.clear()
         self.accountants.clear()
         self.planned_steps_by_client.clear()
+        if not self.dp_enabled:
+            return
         for client_id, train_loader in enumerate(train_loaders):
             dataset_size = len(train_loader.dataset)
             if dataset_size <= 0:
@@ -135,32 +151,41 @@ class AdapL(FederatedMethod):
             total_steps = planned_steps * self.args.global_rounds
             q = min(1.0, self.args.batch_size / float(dataset_size))
             target_epsilon = self.client_target_epsilons[client_id]
-            noise_init = initialize_noise_multiplier(
-                target_epsilon=target_epsilon,
-                target_delta=self.args.delta,
-                q=q,
-                total_steps=total_steps,
-                manual_override=self.args.noise_multiplier_override
-                if self.args.noise_multiplier_override is not None
-                else self.args.noise_multiplier,
-                use_decay_search=self.args.nm_decay,
-                fallback_epsilon=self.args.epsilon_min,
-            )
+            if self.disable_noise:
+                noise_multiplier = 0.0
+                noise_source = "diagnostic_noise_disabled"
+            else:
+                noise_init = initialize_noise_multiplier(
+                    target_epsilon=target_epsilon,
+                    target_delta=self.args.delta,
+                    q=q,
+                    total_steps=total_steps,
+                    manual_override=self.args.noise_multiplier_override
+                    if self.args.noise_multiplier_override is not None
+                    else self.args.noise_multiplier,
+                    use_decay_search=self.args.nm_decay,
+                    fallback_epsilon=self.args.epsilon_min,
+                )
+                noise_multiplier = noise_init.noise_multiplier
+                noise_source = noise_init.source
             self.client_privacy[client_id] = _ClientPrivacyState(
                 target_epsilon=target_epsilon,
-                noise_multiplier=noise_init.noise_multiplier,
-                noise_source=noise_init.source,
+                noise_multiplier=noise_multiplier,
+                noise_source=noise_source,
                 q=q,
             )
-            self.accountants[client_id] = MomentsAccountant(
-                q=q,
-                noise_multiplier=noise_init.noise_multiplier,
-                target_delta=self.args.delta,
-                target_epsilon=target_epsilon,
-            )
+            if self.accounting_enabled:
+                self.accountants[client_id] = MomentsAccountant(
+                    q=q,
+                    noise_multiplier=noise_multiplier,
+                    target_delta=self.args.delta,
+                    target_epsilon=target_epsilon,
+                )
             self.planned_steps_by_client[client_id] = planned_steps
 
     def eligible_client_ids(self, client_ids: Sequence[int]) -> list[int]:
+        if not self.accounting_enabled:
+            return list(client_ids)
         if not self.accountants:
             raise RuntimeError("prepare_privacy_accountants must be called first.")
         eligible = []
@@ -185,12 +210,27 @@ class AdapL(FederatedMethod):
         return len(self.accountants)
 
     def startup_lines(self) -> list[str]:
+        if not self.dp_enabled:
+            return [
+                "AdapL privacy-free ablation: DP accounting, per-sample clipping, "
+                "Fisher masking, Gaussian noise, epsilon, and delta are disabled."
+            ]
+        gradient_mode = (
+            "per_sample_unclipped_then_averaged"
+            if self.disable_clipping
+            else "per_sample_clipped_then_averaged"
+        )
+        noise_mode = "disabled" if self.disable_noise else self.noise_scope
+        fisher_mode = "disabled_all_true_masks" if self.disable_fisher else "enabled"
         lines = [
             (
                 "AdapL DP local training: "
                 "noise_timing=after_each_minibatch, "
-                "gradient=per_sample_clipped_then_averaged, "
-                "noise_scope=important_fisher_mask, "
+                f"gradient={gradient_mode}, "
+                f"noise_scope={noise_mode}, "
+                f"fisher={fisher_mode}, "
+                f"freeze_batch_norm={self.freeze_batch_norm}, "
+                f"privacy_accounting={self.accounting_enabled}, "
                 f"fisher_threshold={self.args.fisher_threshold}, "
                 f"fisher_estimator={self.args.fisher_estimator}, "
                 f"gamma={self.args.gamma}, "
@@ -201,6 +241,17 @@ class AdapL(FederatedMethod):
                 f"nm_decay={self.args.nm_decay}"
             )
         ]
+        if not self.accounting_enabled:
+            lines.append(
+                "WARNING: AdapL diagnostic ablation disables clipping or noise; "
+                "epsilon accounting is disabled and this run is not DP."
+            )
+        elif self.noise_scope == "fisher" and not self.disable_fisher:
+            lines.append(
+                "WARNING: Fisher-only noise leaves released coordinates unnoised; "
+                "the reported accountant value is a legacy diagnostic, not a "
+                "complete model-level DP guarantee."
+            )
         if self.privacy_scenario is not None:
             lines.append(
                 "Paper privacy scenario: "
@@ -212,6 +263,15 @@ class AdapL(FederatedMethod):
 
     def config_rows(self) -> list[tuple[str, str, object]]:
         rows = super().config_rows()
+        if not self.dp_enabled:
+            rows.extend(
+                [
+                    ("privacy", "dp_enabled", False),
+                    ("adapl", "ablation", "privacy_free"),
+                    ("adapl", "adapl_alpha", self.args.adapl_alpha),
+                ]
+            )
+            return rows
         budget_count = sum(
             1 for epsilon in self.client_target_epsilons if epsilon is not None
         )
@@ -237,6 +297,12 @@ class AdapL(FederatedMethod):
                 ("adapl", "max_clip_norm", self.args.max_clip_norm),
                 ("adapl", "prox_mu", self.args.prox_mu),
                 ("adapl", "nm_decay", self.args.nm_decay),
+                ("adapl", "disable_noise", self.disable_noise),
+                ("adapl", "disable_clipping", self.disable_clipping),
+                ("adapl", "disable_fisher", self.disable_fisher),
+                ("adapl", "noise_scope", self.noise_scope),
+                ("adapl", "freeze_batch_norm", self.freeze_batch_norm),
+                ("privacy", "accounting_enabled", self.accounting_enabled),
             ]
         )
         if self.privacy_scenario is not None:
@@ -254,6 +320,13 @@ class AdapL(FederatedMethod):
 
     def config_payload(self) -> dict[str, object]:
         payload = super().config_payload()
+        if not self.dp_enabled:
+            payload["dp_enabled"] = False
+            payload["adapl"] = {
+                "ablation": "privacy_free",
+                "adapl_alpha": self.args.adapl_alpha,
+            }
+            return payload
         payload["dp_enabled"] = True
         payload["privacy"] = {
             "mechanism": "minibatch_gradient_gaussian_moments",
@@ -273,6 +346,12 @@ class AdapL(FederatedMethod):
             "max_clip_norm": self.args.max_clip_norm,
             "prox_mu": self.args.prox_mu,
             "nm_decay": self.args.nm_decay,
+            "disable_noise": self.disable_noise,
+            "disable_clipping": self.disable_clipping,
+            "disable_fisher": self.disable_fisher,
+            "noise_scope": self.noise_scope,
+            "freeze_batch_norm": self.freeze_batch_norm,
+            "privacy_accounting_enabled": self.accounting_enabled,
         }
         if self.privacy_scenario is not None:
             payload["privacy"]["scenario"] = {
@@ -297,12 +376,32 @@ class AdapL(FederatedMethod):
     ) -> ClientUpdate:
         if client_id not in self.current_selected_clients:
             raise RuntimeError(f"Client {client_id} is not selected this round.")
-        if client_id not in self.accountants:
+        if not self.dp_enabled:
+            state_dict, train_loss, num_examples = train_client_sgd(
+                model_fn=model_fn,
+                global_state=global_state,
+                train_loader=train_loader,
+                local_steps=self.args.local_steps,
+                local_epochs=self.args.local_epochs,
+                local_update_mode=self.args.local_update_mode,
+                lr=self.args.lr,
+                momentum=self.args.momentum,
+                weight_decay=self.args.weight_decay,
+                device=device,
+            )
+            return ClientUpdate(
+                client_id=client_id,
+                state_dict=state_dict,
+                train_loss=train_loss,
+                num_examples=num_examples,
+                metadata={"adapl_ablation": "privacy_free"},
+            )
+        if client_id not in self.client_privacy:
             raise RuntimeError("prepare_privacy_accountants must be called first.")
 
-        accountant = self.accountants[client_id]
+        accountant = self.accountants.get(client_id)
         planned_steps = self.planned_steps_by_client[client_id]
-        if not accountant.can_train(planned_steps):
+        if accountant is not None and not accountant.can_train(planned_steps):
             raise RuntimeError(
                 f"Client {client_id} cannot train {planned_steps} more steps "
                 "without exceeding its privacy budget."
@@ -325,6 +424,10 @@ class AdapL(FederatedMethod):
                 base_noise_multiplier=privacy_state.noise_multiplier,
                 gamma=self.args.gamma,
                 prox_mu=self.args.prox_mu,
+                enable_clipping=not self.disable_clipping,
+                enable_noise=not self.disable_noise,
+                noise_scope=self.noise_scope,
+                freeze_batch_norm=self.freeze_batch_norm,
             )
             update_phase = "first"
         else:
@@ -346,22 +449,35 @@ class AdapL(FederatedMethod):
                 fisher_threshold=self.args.fisher_threshold,
                 fisher_estimator=self.args.fisher_estimator,
                 fisher_batches=self.args.fisher_batches,
-                max_clip_norm=self.args.max_clip_norm,
+                max_clip_norm=(
+                    None if self.disable_clipping else self.args.max_clip_norm
+                ),
                 prox_mu=self.args.prox_mu,
+                enable_clipping=not self.disable_clipping,
+                enable_noise=not self.disable_noise,
+                enable_fisher=not self.disable_fisher,
+                noise_scope=self.noise_scope,
+                freeze_batch_norm=self.freeze_batch_norm,
             )
             update_phase = "decay"
 
-        if not accountant.can_train(result.actual_minibatch_steps):
-            raise RuntimeError(
-                f"Client {client_id} actual steps exceed its remaining privacy budget."
-            )
-        before_steps = accountant.current_steps
-        epsilon_after = accountant.commit_steps(result.actual_minibatch_steps)
-        committed_steps = result.actual_minibatch_steps
-        if accountant.current_steps - before_steps != committed_steps:
-            raise RuntimeError(
-                "Accountant committed steps do not match the local trainer result."
-            )
+        if accountant is not None:
+            if not accountant.can_train(result.actual_minibatch_steps):
+                raise RuntimeError(
+                    f"Client {client_id} actual steps exceed its remaining privacy budget."
+                )
+            before_steps = accountant.current_steps
+            epsilon_after = accountant.commit_steps(result.actual_minibatch_steps)
+            committed_steps = result.actual_minibatch_steps
+            if accountant.current_steps - before_steps != committed_steps:
+                raise RuntimeError(
+                    "Accountant committed steps do not match the local trainer result."
+                )
+            accountant_total_steps = accountant.current_steps
+        else:
+            epsilon_after = None
+            committed_steps = 0
+            accountant_total_steps = 0
         update_norm = client_update_l2_norm(global_state, result.state_dict)
 
         return ClientUpdate(
@@ -372,7 +488,7 @@ class AdapL(FederatedMethod):
             metadata={
                 "actual_minibatch_steps": result.actual_minibatch_steps,
                 "accountant_committed_steps": committed_steps,
-                "accountant_total_steps": accountant.current_steps,
+                "accountant_total_steps": accountant_total_steps,
                 "epsilon": epsilon_after,
                 "epsilon_target": privacy_state.target_epsilon,
                 "epsilon_min": min(
@@ -390,10 +506,18 @@ class AdapL(FederatedMethod):
                 "base_noise_multiplier": privacy_state.noise_multiplier,
                 "noise_source": privacy_state.noise_source,
                 "noise_std": result.noise_std_mean,
+                "sample_grad_norm": result.sample_grad_norm_mean,
+                "sample_grad_norm_p50": result.sample_grad_norm_p50,
+                "sample_grad_norm_p90": result.sample_grad_norm_p90,
+                "sample_grad_norm_p99": result.sample_grad_norm_p99,
                 "update_norm": update_norm,
                 "clipped_norm": result.sample_clipped_norm_mean,
                 "clip_factor": result.sample_clip_factor_mean,
+                "clip_fraction": result.sample_clip_fraction,
                 "layer_clip_factor": result.layer_clip_factor_mean,
+                "signal_l2": result.signal_l2_mean,
+                "noise_l2": result.noise_l2_mean,
+                "noise_to_signal_ratio": result.noise_to_signal_ratio_mean,
                 "prox_mu": self.args.prox_mu,
                 "proximal_norm": result.proximal_norm_mean,
                 "fisher_threshold": self.args.fisher_threshold,
@@ -401,6 +525,12 @@ class AdapL(FederatedMethod):
                 "fisher_important_ratio": result.important_ratio,
                 "fisher_important_params": result.important_params,
                 "fisher_total_params": result.total_params,
+                "adapl_disable_noise": self.disable_noise,
+                "adapl_disable_clipping": self.disable_clipping,
+                "adapl_disable_fisher": self.disable_fisher,
+                "adapl_noise_scope": self.noise_scope,
+                "adapl_freeze_bn": self.freeze_batch_norm,
+                "privacy_accounting_enabled": self.accounting_enabled,
                 "privacy_scenario": (
                     self.privacy_scenario.name if self.privacy_scenario else ""
                 ),
@@ -420,6 +550,14 @@ class AdapL(FederatedMethod):
         if total_size <= 0:
             raise ValueError("Total selected client examples must be positive.")
         data_weights = [client_size / total_size for client_size in client_sizes]
+
+        if not self.dp_enabled:
+            for update, weight in zip(client_updates, data_weights):
+                update.metadata["aggregation_weight"] = weight
+            return aggregate_state_dicts(
+                [update.state_dict for update in client_updates],
+                data_weights,
+            )
 
         epsilons: list[float] = []
         for update in client_updates:
@@ -457,6 +595,17 @@ class AdapL(FederatedMethod):
         test_accuracy: float,
     ) -> bool:
         if not math.isfinite(test_accuracy):
+            return False
+
+        if not self.dp_enabled:
+            previous_best = (
+                max(self.test_accuracy_history)
+                if self.test_accuracy_history
+                else -math.inf
+            )
+            self.test_accuracy_history.append(float(test_accuracy))
+            if test_accuracy > previous_best:
+                self.latest_global_state = clone_state_dict(global_state)
             return False
 
         previous_best = (

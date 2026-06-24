@@ -115,8 +115,27 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     update_norms = _float_metadata_values(client_updates, "update_norm")
     clipped_norms = _float_metadata_values(client_updates, "clipped_norm")
     clip_factors = _float_metadata_values(client_updates, "clip_factor")
+    clip_fractions = _float_metadata_values(client_updates, "clip_fraction")
+    sample_grad_norms = _float_metadata_values(client_updates, "sample_grad_norm")
+    sample_grad_norm_p50s = _float_metadata_values(
+        client_updates, "sample_grad_norm_p50"
+    )
+    sample_grad_norm_p90s = _float_metadata_values(
+        client_updates, "sample_grad_norm_p90"
+    )
+    sample_grad_norm_p99s = _float_metadata_values(
+        client_updates, "sample_grad_norm_p99"
+    )
     proximal_norms = _float_metadata_values(client_updates, "proximal_norm")
     noise_stds = _float_metadata_values(client_updates, "noise_std")
+    signal_l2s = _float_metadata_values(client_updates, "signal_l2")
+    noise_l2s = _float_metadata_values(client_updates, "noise_l2")
+    noise_to_signal_ratios = _float_metadata_values(
+        client_updates, "noise_to_signal_ratio"
+    )
+    fisher_important_ratios = _float_metadata_values(
+        client_updates, "fisher_important_ratio"
+    )
     actual_minibatch_steps = _float_metadata_values(
         client_updates,
         "actual_minibatch_steps",
@@ -164,10 +183,44 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     if clip_factors:
         metrics["dp_clip_factor_mean"] = sum(clip_factors) / len(clip_factors)
         metrics["dp_clip_factor_min"] = min(clip_factors)
+    if clip_fractions:
+        metrics["adapl_clip_fraction_mean"] = sum(clip_fractions) / len(
+            clip_fractions
+        )
+    if sample_grad_norms:
+        metrics["adapl_sample_grad_norm_mean"] = sum(sample_grad_norms) / len(
+            sample_grad_norms
+        )
+    if sample_grad_norm_p50s:
+        metrics["adapl_sample_grad_norm_p50_mean"] = sum(
+            sample_grad_norm_p50s
+        ) / len(sample_grad_norm_p50s)
+    if sample_grad_norm_p90s:
+        metrics["adapl_sample_grad_norm_p90_mean"] = sum(
+            sample_grad_norm_p90s
+        ) / len(sample_grad_norm_p90s)
+    if sample_grad_norm_p99s:
+        metrics["adapl_sample_grad_norm_p99_mean"] = sum(
+            sample_grad_norm_p99s
+        ) / len(sample_grad_norm_p99s)
     if proximal_norms:
         metrics["dp_proximal_norm_mean"] = sum(proximal_norms) / len(proximal_norms)
     if noise_stds:
         metrics["dp_noise_std_mean"] = sum(noise_stds) / len(noise_stds)
+    if signal_l2s:
+        metrics["adapl_signal_l2_mean"] = sum(signal_l2s) / len(signal_l2s)
+    if noise_l2s:
+        metrics["adapl_noise_l2_mean"] = sum(noise_l2s) / len(noise_l2s)
+    if noise_to_signal_ratios:
+        metrics["adapl_noise_to_signal_ratio_mean"] = sum(
+            noise_to_signal_ratios
+        ) / len(noise_to_signal_ratios)
+    if fisher_important_ratios:
+        metrics["adapl_fisher_important_ratio_mean"] = sum(
+            fisher_important_ratios
+        ) / len(fisher_important_ratios)
+        metrics["adapl_fisher_important_ratio_min"] = min(fisher_important_ratios)
+        metrics["adapl_fisher_important_ratio_max"] = max(fisher_important_ratios)
     if actual_minibatch_steps:
         metrics["actual_minibatch_steps_min"] = min(actual_minibatch_steps)
         metrics["actual_minibatch_steps_max"] = max(actual_minibatch_steps)
@@ -280,6 +333,19 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
         text += (
             " nm="
             f"{metrics.get('noise_multiplier_mean', math.nan):.4f}"
+        )
+    if "adapl_sample_grad_norm_p90_mean" in metrics:
+        text += (
+            " grad_p90="
+            f"{metrics.get('adapl_sample_grad_norm_p90_mean', math.nan):.3f}"
+            " clip_frac="
+            f"{metrics.get('adapl_clip_fraction_mean', math.nan):.3f}"
+            " noise_l2="
+            f"{metrics.get('adapl_noise_l2_mean', math.nan):.3f}"
+            " noise/signal="
+            f"{metrics.get('adapl_noise_to_signal_ratio_mean', math.nan):.3f}"
+            " fisher_ratio="
+            f"{metrics.get('adapl_fisher_important_ratio_mean', math.nan):.3f}"
         )
     if "privacy_budget_active_clients" in metrics:
         text += (

@@ -27,11 +27,18 @@ class AdapLTrainResult:
     num_examples: int
     actual_minibatch_steps: int
     sample_grad_norm_mean: float
+    sample_grad_norm_p50: float
+    sample_grad_norm_p90: float
+    sample_grad_norm_p99: float
     sample_clipped_norm_mean: float
     sample_clip_factor_mean: float
+    sample_clip_fraction: float
     layer_clip_factor_mean: float
     proximal_norm_mean: float
     noise_std_mean: float
+    signal_l2_mean: float
+    noise_l2_mean: float
+    noise_to_signal_ratio_mean: float
     noise_multiplier_min: float
     noise_multiplier_max: float
     noise_multiplier_mean: float
@@ -59,17 +66,19 @@ def _batch_norm_modules(model: nn.Module) -> list[nn.Module]:
 def _update_batch_norm_once_and_freeze(
     model: nn.Module,
     inputs: torch.Tensor,
+    freeze_running_stats: bool,
 ) -> list[tuple[nn.Module, bool]]:
     batch_norm_modules = _batch_norm_modules(model)
     states = [(module, module.training) for module in batch_norm_modules]
     if not batch_norm_modules:
         return states
 
-    for module in batch_norm_modules:
-        module.train(True)
-    with torch.no_grad():
-        model(inputs)
-    model.zero_grad(set_to_none=True)
+    if not freeze_running_stats:
+        for module in batch_norm_modules:
+            module.train(True)
+        with torch.no_grad():
+            model(inputs)
+        model.zero_grad(set_to_none=True)
     for module in batch_norm_modules:
         module.train(False)
     return states
@@ -140,8 +149,10 @@ def _per_sample_clipped_batch_gradient(
     targets: torch.Tensor,
     device: torch.device,
     clipping_bound: float,
-) -> tuple[dict[str, torch.Tensor], float, int, dict[str, float]]:
-    if clipping_bound <= 0:
+    enable_clipping: bool,
+    freeze_batch_norm: bool,
+) -> tuple[dict[str, torch.Tensor], float, int, dict[str, object]]:
+    if enable_clipping and clipping_bound <= 0:
         raise ValueError("clipping_bound must be positive.")
 
     inputs = inputs.to(device, non_blocking=True)
@@ -159,8 +170,14 @@ def _per_sample_clipped_batch_gradient(
     grad_norm_sum = 0.0
     clipped_norm_sum = 0.0
     clip_factor_sum = 0.0
+    clipped_sample_count = 0
+    grad_norm_values: list[float] = []
 
-    batch_norm_states = _update_batch_norm_once_and_freeze(model, inputs)
+    batch_norm_states = _update_batch_norm_once_and_freeze(
+        model,
+        inputs,
+        freeze_running_stats=freeze_batch_norm,
+    )
     try:
         for sample_idx in range(batch_size):
             model.zero_grad(set_to_none=True)
@@ -179,10 +196,16 @@ def _per_sample_clipped_batch_gradient(
                 squared_norm += float(torch.sum(grad.double() * grad.double()).item())
 
             grad_norm = squared_norm ** 0.5
-            clip_factor = min(1.0, clipping_bound / (grad_norm + 1e-12))
+            clip_factor = (
+                min(1.0, clipping_bound / (grad_norm + 1e-12))
+                if enable_clipping
+                else 1.0
+            )
             grad_norm_sum += grad_norm
-            clipped_norm_sum += min(grad_norm, clipping_bound)
+            clipped_norm_sum += grad_norm * clip_factor
             clip_factor_sum += clip_factor
+            clipped_sample_count += int(clip_factor < 1.0)
+            grad_norm_values.append(grad_norm)
             for name, grad in sample_grads.items():
                 batch_grads[name].add_(grad, alpha=clip_factor)
 
@@ -200,7 +223,9 @@ def _per_sample_clipped_batch_gradient(
             "grad_norm_sum": grad_norm_sum,
             "clipped_norm_sum": clipped_norm_sum,
             "clip_factor_sum": clip_factor_sum,
+            "clipped_sample_count": float(clipped_sample_count),
             "sample_count": float(batch_size),
+            "grad_norm_values": grad_norm_values,
         },
     )
 
@@ -263,7 +288,12 @@ def _mask_summary(masks: Mapping[str, torch.Tensor]) -> tuple[float, int, int]:
 def _noised_layer_names(
     masks: Mapping[str, torch.Tensor],
     layer_stats: Mapping[str, LayerNoiseStats],
+    noise_scope: str,
 ) -> list[str]:
+    if noise_scope not in {"fisher", "all"}:
+        raise ValueError("noise_scope must be 'fisher' or 'all'.")
+    if noise_scope == "all":
+        return list(layer_stats)
     names = []
     for name in layer_stats:
         mask = masks.get(name)
@@ -276,8 +306,9 @@ def _apply_masked_noise(
     batch_grads: Mapping[str, torch.Tensor],
     masks: Mapping[str, torch.Tensor],
     layer_stats: Mapping[str, LayerNoiseStats],
-) -> tuple[float, float, float, float]:
-    noised_names = _noised_layer_names(masks, layer_stats)
+    noise_scope: str,
+) -> tuple[float, float, float, float, float]:
+    noised_names = _noised_layer_names(masks, layer_stats, noise_scope)
     if noised_names:
         sigma_values = [layer_stats[name].sigma for name in noised_names]
         std_values = [layer_stats[name].std for name in noised_names]
@@ -288,11 +319,12 @@ def _apply_masked_noise(
     else:
         sigma_min = sigma_max = sigma_mean = std_mean = 0.0
 
+    noise_squared_norm: torch.Tensor | None = None
     for name, grad in batch_grads.items():
         stats = layer_stats.get(name)
         if stats is None or stats.std <= 0:
             continue
-        mask = masks.get(name)
+        mask = None if noise_scope == "all" else masks.get(name)
         if mask is None:
             mask_tensor = torch.ones_like(grad, dtype=grad.dtype, device=grad.device)
         else:
@@ -306,9 +338,42 @@ def _apply_masked_noise(
             device=grad.device,
             dtype=grad.dtype,
         )
-        grad.add_(noise * mask_tensor)
+        applied_noise = noise * mask_tensor
+        grad.add_(applied_noise)
+        squared = torch.sum(applied_noise.detach().float().square())
+        noise_squared_norm = (
+            squared if noise_squared_norm is None else noise_squared_norm + squared
+        )
 
-    return sigma_min, sigma_max, sigma_mean, std_mean
+    noise_l2 = (
+        0.0
+        if noise_squared_norm is None
+        else float(torch.sqrt(noise_squared_norm).item())
+    )
+    return sigma_min, sigma_max, sigma_mean, std_mean, noise_l2
+
+
+def _l2_norm(tensors: Mapping[str, torch.Tensor]) -> float:
+    squared_norm: torch.Tensor | None = None
+    for tensor in tensors.values():
+        squared = torch.sum(tensor.detach().float().square())
+        squared_norm = squared if squared_norm is None else squared_norm + squared
+    if squared_norm is None:
+        return 0.0
+    return float(torch.sqrt(squared_norm).item())
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    if not 0 <= percentile <= 1:
+        raise ValueError("percentile must be in [0, 1].")
+    ordered = sorted(values)
+    position = percentile * (len(ordered) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(ordered) - 1)
+    weight = position - lower
+    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
 
 
 def _install_gradients_and_step(
@@ -344,7 +409,13 @@ def _run_adapl_update(
     max_clip_norm: float | None,
     global_reference_state: Mapping[str, torch.Tensor],
     prox_mu: float,
+    enable_clipping: bool,
+    enable_noise: bool,
+    noise_scope: str,
+    freeze_batch_norm: bool,
 ) -> AdapLTrainResult:
+    if noise_scope not in {"fisher", "all"}:
+        raise ValueError("noise_scope must be 'fisher' or 'all'.")
     model.train()
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.SGD(
@@ -364,10 +435,15 @@ def _run_adapl_update(
     sample_grad_norm_sum = 0.0
     sample_clipped_norm_sum = 0.0
     sample_clip_factor_sum = 0.0
+    clipped_sample_count = 0.0
     sample_count = 0.0
+    sample_grad_norm_values: list[float] = []
     layer_clip_factor_sum = 0.0
     proximal_norm_sum = 0.0
     noise_std_sum = 0.0
+    signal_l2_sum = 0.0
+    noise_l2_sum = 0.0
+    noise_to_signal_ratio_sum = 0.0
     noise_multiplier_min_values: list[float] = []
     noise_multiplier_max_values: list[float] = []
     noise_multiplier_mean_values: list[float] = []
@@ -386,6 +462,8 @@ def _run_adapl_update(
                 targets=targets,
                 device=device,
                 clipping_bound=clipping_bound,
+                enable_clipping=enable_clipping,
+                freeze_batch_norm=freeze_batch_norm,
             )
         )
         proximal_norm_sum += _apply_proximal_gradient(
@@ -395,29 +473,41 @@ def _run_adapl_update(
             prox_mu=prox_mu,
         )
         layer_clip_factor = _apply_decay_layer_clipping(batch_grads, max_clip_norm)
-        stats_by_layer = layerwise_noise_stats(
-            base_noise_multiplier=base_noise_multiplier,
-            fisher_mean_by_layer=fisher_mean_by_layer,
-            gamma=gamma,
-            clipping_bound=clipping_bound,
-            batch_size=batch_size,
-        )
-        sigma_min, sigma_max, sigma_mean, std_mean = _apply_masked_noise(
-            batch_grads,
-            masks,
-            stats_by_layer,
-        )
+        signal_l2 = _l2_norm(batch_grads)
+        if enable_noise:
+            stats_by_layer = layerwise_noise_stats(
+                base_noise_multiplier=base_noise_multiplier,
+                fisher_mean_by_layer=fisher_mean_by_layer,
+                gamma=gamma,
+                clipping_bound=clipping_bound,
+                batch_size=batch_size,
+            )
+            sigma_min, sigma_max, sigma_mean, std_mean, noise_l2 = (
+                _apply_masked_noise(
+                    batch_grads,
+                    masks,
+                    stats_by_layer,
+                    noise_scope,
+                )
+            )
+        else:
+            sigma_min = sigma_max = sigma_mean = std_mean = noise_l2 = 0.0
         _install_gradients_and_step(model, optimizer, batch_grads)
 
         total_loss += batch_loss
         total_examples += batch_size
         actual_steps += 1
-        sample_grad_norm_sum += batch_stats["grad_norm_sum"]
-        sample_clipped_norm_sum += batch_stats["clipped_norm_sum"]
-        sample_clip_factor_sum += batch_stats["clip_factor_sum"]
-        sample_count += batch_stats["sample_count"]
+        sample_grad_norm_sum += float(batch_stats["grad_norm_sum"])
+        sample_clipped_norm_sum += float(batch_stats["clipped_norm_sum"])
+        sample_clip_factor_sum += float(batch_stats["clip_factor_sum"])
+        clipped_sample_count += float(batch_stats["clipped_sample_count"])
+        sample_count += float(batch_stats["sample_count"])
+        sample_grad_norm_values.extend(batch_stats["grad_norm_values"])
         layer_clip_factor_sum += layer_clip_factor
         noise_std_sum += std_mean
+        signal_l2_sum += signal_l2
+        noise_l2_sum += noise_l2
+        noise_to_signal_ratio_sum += noise_l2 / max(signal_l2, 1e-12)
         noise_multiplier_min_values.append(sigma_min)
         noise_multiplier_max_values.append(sigma_max)
         noise_multiplier_mean_values.append(sigma_mean)
@@ -432,11 +522,20 @@ def _run_adapl_update(
         num_examples=len(train_loader.dataset),
         actual_minibatch_steps=actual_steps,
         sample_grad_norm_mean=sample_grad_norm_sum / max(1.0, sample_count),
+        sample_grad_norm_p50=_percentile(sample_grad_norm_values, 0.50),
+        sample_grad_norm_p90=_percentile(sample_grad_norm_values, 0.90),
+        sample_grad_norm_p99=_percentile(sample_grad_norm_values, 0.99),
         sample_clipped_norm_mean=sample_clipped_norm_sum / max(1.0, sample_count),
         sample_clip_factor_mean=sample_clip_factor_sum / max(1.0, sample_count),
+        sample_clip_fraction=clipped_sample_count / max(1.0, sample_count),
         layer_clip_factor_mean=layer_clip_factor_sum / max(1, actual_steps),
         proximal_norm_mean=proximal_norm_sum / max(1, actual_steps),
         noise_std_mean=noise_std_sum / max(1, actual_steps),
+        signal_l2_mean=signal_l2_sum / max(1, actual_steps),
+        noise_l2_mean=noise_l2_sum / max(1, actual_steps),
+        noise_to_signal_ratio_mean=(
+            noise_to_signal_ratio_sum / max(1, actual_steps)
+        ),
         noise_multiplier_min=min(noise_multiplier_min_values),
         noise_multiplier_max=max(noise_multiplier_max_values),
         noise_multiplier_mean=sum(noise_multiplier_mean_values)
@@ -463,6 +562,10 @@ def local_update_first(
     base_noise_multiplier: float,
     gamma: float,
     prox_mu: float,
+    enable_clipping: bool = True,
+    enable_noise: bool = True,
+    noise_scope: str = "fisher",
+    freeze_batch_norm: bool = False,
 ) -> AdapLTrainResult:
     model = model_fn().to(device)
     model.load_state_dict(global_state)
@@ -490,6 +593,10 @@ def local_update_first(
         max_clip_norm=None,
         global_reference_state=global_state,
         prox_mu=prox_mu,
+        enable_clipping=enable_clipping,
+        enable_noise=enable_noise,
+        noise_scope=noise_scope,
+        freeze_batch_norm=freeze_batch_norm,
     )
 
 
@@ -514,19 +621,34 @@ def local_update_decay(
     fisher_batches: int,
     max_clip_norm: float | None,
     prox_mu: float,
+    enable_clipping: bool = True,
+    enable_noise: bool = True,
+    enable_fisher: bool = True,
+    noise_scope: str = "fisher",
+    freeze_batch_norm: bool = False,
 ) -> AdapLTrainResult:
-    fisher_model = model_fn().to(device)
-    fisher_model.load_state_dict(latest_global_state)
-    fisher_diag = compute_fisher_diag(
-        fisher_model,
-        train_loader,
-        device,
-        estimator=fisher_estimator,
-        max_batches=None if fisher_batches == 0 else fisher_batches,
-    )
-    masks = make_important_masks(fisher_diag, fisher_threshold)
-    fisher_mean_by_layer = fisher_means(fisher_diag)
-    del fisher_model
+    if enable_fisher:
+        fisher_model = model_fn().to(device)
+        fisher_model.load_state_dict(latest_global_state)
+        fisher_diag = compute_fisher_diag(
+            fisher_model,
+            train_loader,
+            device,
+            estimator=fisher_estimator,
+            max_batches=None if fisher_batches == 0 else fisher_batches,
+        )
+        masks = make_important_masks(fisher_diag, fisher_threshold)
+        fisher_mean_by_layer = fisher_means(fisher_diag)
+        del fisher_model
+    else:
+        mask_model = model_fn().to(device)
+        masks = all_trainable_important_masks(mask_model)
+        fisher_mean_by_layer = {
+            name: 0.0
+            for name, parameter in mask_model.named_parameters()
+            if parameter.requires_grad
+        }
+        del mask_model
 
     model = model_fn().to(device)
     model.load_state_dict(global_state)
@@ -545,7 +667,11 @@ def local_update_decay(
         gamma=gamma,
         masks=masks,
         fisher_mean_by_layer=fisher_mean_by_layer,
-        max_clip_norm=max_clip_norm,
+        max_clip_norm=max_clip_norm if enable_clipping else None,
         global_reference_state=global_state,
         prox_mu=prox_mu,
+        enable_clipping=enable_clipping,
+        enable_noise=enable_noise,
+        noise_scope=noise_scope,
+        freeze_batch_norm=freeze_batch_norm,
     )

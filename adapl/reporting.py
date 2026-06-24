@@ -226,6 +226,17 @@ def init_output_csv(path: str) -> None:
                 "dp_clip_factor_min",
                 "dp_proximal_norm_mean",
                 "dp_noise_std_mean",
+                "adapl_sample_grad_norm_mean",
+                "adapl_sample_grad_norm_p50_mean",
+                "adapl_sample_grad_norm_p90_mean",
+                "adapl_sample_grad_norm_p99_mean",
+                "adapl_clip_fraction_mean",
+                "adapl_signal_l2_mean",
+                "adapl_noise_l2_mean",
+                "adapl_noise_to_signal_ratio_mean",
+                "adapl_fisher_important_ratio_mean",
+                "adapl_fisher_important_ratio_min",
+                "adapl_fisher_important_ratio_max",
                 "actual_minibatch_steps_min",
                 "actual_minibatch_steps_max",
                 "actual_minibatch_steps_mean",
@@ -304,6 +315,35 @@ def append_output_csv(
                 _format_optional_metric(round_metrics.get("dp_clip_factor_min")),
                 _format_optional_metric(round_metrics.get("dp_proximal_norm_mean")),
                 _format_optional_metric(round_metrics.get("dp_noise_std_mean")),
+                _format_optional_metric(
+                    round_metrics.get("adapl_sample_grad_norm_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_sample_grad_norm_p50_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_sample_grad_norm_p90_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_sample_grad_norm_p99_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_clip_fraction_mean")
+                ),
+                _format_optional_metric(round_metrics.get("adapl_signal_l2_mean")),
+                _format_optional_metric(round_metrics.get("adapl_noise_l2_mean")),
+                _format_optional_metric(
+                    round_metrics.get("adapl_noise_to_signal_ratio_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_fisher_important_ratio_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_fisher_important_ratio_min")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_fisher_important_ratio_max")
+                ),
                 _format_optional_metric(
                     round_metrics.get("actual_minibatch_steps_min")
                 ),

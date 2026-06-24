@@ -228,6 +228,57 @@ def build_parser() -> argparse.ArgumentParser:
             "0 disables the proximal term."
         ),
     )
+    parser.add_argument(
+        "--adapl_disable_noise",
+        "--disable_dp_noise",
+        dest="adapl_disable_noise",
+        action="store_true",
+        help=(
+            "Diagnostic AdapL ablation: keep the per-sample gradient path but "
+            "skip Gaussian noise. The resulting run is not differentially private."
+        ),
+    )
+    parser.add_argument(
+        "--adapl_disable_clipping",
+        "--disable_clipping",
+        dest="adapl_disable_clipping",
+        action="store_true",
+        help=(
+            "Diagnostic AdapL ablation: compute per-sample gradients without "
+            "clipping them. The resulting run is not differentially private."
+        ),
+    )
+    parser.add_argument(
+        "--adapl_disable_fisher",
+        "--disable_fisher",
+        dest="adapl_disable_fisher",
+        action="store_true",
+        help=(
+            "Diagnostic AdapL ablation: skip Fisher estimation, use all-true "
+            "masks, and use uniform base layer noise multipliers."
+        ),
+    )
+    parser.add_argument(
+        "--adapl_noise_scope",
+        "--noise_scope",
+        dest="adapl_noise_scope",
+        choices=["fisher", "all"],
+        default="fisher",
+        help=(
+            "Where AdapL applies Gaussian noise: Fisher-important coordinates "
+            "(legacy behavior) or every trainable coordinate."
+        ),
+    )
+    parser.add_argument(
+        "--adapl_freeze_bn",
+        "--freeze_bn",
+        dest="adapl_freeze_bn",
+        action="store_true",
+        help=(
+            "Keep BatchNorm in evaluation mode during AdapL local training so "
+            "running statistics are neither updated nor released."
+        ),
+    )
     nm_decay_group = parser.add_mutually_exclusive_group()
     nm_decay_group.add_argument(
         "--nm_decay",
@@ -533,6 +584,20 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("--max_clip_norm must be positive.")
     if args.prox_mu < 0:
         raise ValueError("--prox_mu must be non-negative.")
+    adapl_ablation_requested = (
+        args.adapl_disable_noise
+        or args.adapl_disable_clipping
+        or args.adapl_disable_fisher
+        or args.adapl_noise_scope != "fisher"
+        or args.adapl_freeze_bn
+    )
+    if adapl_ablation_requested and args.method != "adapl":
+        raise ValueError("AdapL diagnostic switches require --method adapl.")
+    if adapl_ablation_requested and args.no_dp:
+        raise ValueError(
+            "AdapL diagnostic switches exercise the DP trainer and require --use_dp. "
+            "Use --no_dp alone for the ordinary SGD/FedAvg baseline."
+        )
     if args.lr <= 0:
         raise ValueError("--lr must be positive.")
     args.lr_milestones = _parse_int_list(args.lr_milestones, "--lr_milestones")
