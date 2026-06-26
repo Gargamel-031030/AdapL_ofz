@@ -68,6 +68,7 @@ class MomentsAccountant:
     current_steps: int = 0
     log_moments: list[float] = field(default_factory=list)
     finished: bool = False
+    budget_growth_factor: float = 1.0
 
     def __post_init__(self) -> None:
         if self.q <= 0:
@@ -82,6 +83,8 @@ class MomentsAccountant:
             raise ValueError("moment orders must be positive.")
         if self.current_steps < 0:
             raise ValueError("current_steps must be non-negative.")
+        if self.budget_growth_factor <= 0:
+            raise ValueError("budget_growth_factor must be positive.")
         if not self.log_moments:
             self.log_moments = [0.0 for _ in self.moment_orders]
         if len(self.log_moments) != len(self.moment_orders):
@@ -132,7 +135,10 @@ class MomentsAccountant:
             return False
         if self.target_epsilon is None:
             return True
-        return self.projected_epsilon(next_steps) <= self.target_epsilon
+        return (
+            self.projected_epsilon(next_steps) * self.budget_growth_factor
+            <= self.target_epsilon
+        )
 
     def commit_steps(self, actual_steps: int) -> float:
         """Commit exactly the number of minibatch mechanisms that actually ran."""
@@ -145,6 +151,9 @@ class MomentsAccountant:
         ]
         self.current_steps += actual_steps
         epsilon = self.epsilon()
-        if self.target_epsilon is not None and epsilon > self.target_epsilon:
+        if (
+            self.target_epsilon is not None
+            and epsilon * self.budget_growth_factor > self.target_epsilon
+        ):
             self.finished = True
         return epsilon

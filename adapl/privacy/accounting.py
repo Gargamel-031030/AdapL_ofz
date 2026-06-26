@@ -58,6 +58,7 @@ class PrivacyBudgetAccountant:
     accumulated_budget: float = 0.0
     current_steps: int = 0
     finished: bool = False
+    budget_growth_factor: float = 1.0
     _tmp_budget: float | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -68,6 +69,8 @@ class PrivacyBudgetAccountant:
             raise ValueError("accumulated_budget must be non-negative.")
         if self.current_steps < 0:
             raise ValueError("current_steps must be non-negative.")
+        if self.budget_growth_factor <= 0:
+            raise ValueError("budget_growth_factor must be positive.")
 
     def precheck(
         self,
@@ -91,7 +94,7 @@ class PrivacyBudgetAccountant:
             q=q,
             sigma=self.noise_multiplier,
             delta=self.delta,
-        )
+        ) * self.budget_growth_factor
         if tmp_budget > self.epsilon:
             self.finished = True
             self._tmp_budget = None
@@ -138,6 +141,7 @@ class ClientPrivacyBudgetManager:
         delta: float,
         noise_multiplier: float | None = None,
         epsilon_floor: float | None = None,
+        budget_growth_factor: float = 1.0,
     ) -> "ClientPrivacyBudgetManager":
         if not client_epsilons:
             raise ValueError("client_epsilons must not be empty.")
@@ -164,6 +168,7 @@ class ClientPrivacyBudgetManager:
                 epsilon=float(epsilon),
                 delta=delta,
                 noise_multiplier=client_noise_multiplier,
+                budget_growth_factor=budget_growth_factor,
             )
         return cls(accountants)
 
@@ -293,6 +298,7 @@ def build_privacy_budget_manager_from_args(
         delta = 1e-5
     noise_multiplier = _arg_value(args, "noise_multiplier")
     epsilon_floor = _arg_value(args, "epsilon_min")
+    budget_growth_factor = float(_arg_value(args, "budget_growth_factor", 1.0))
     return ClientPrivacyBudgetManager.from_client_epsilons(
         client_epsilons=client_epsilons,
         delta=float(delta),
@@ -300,6 +306,7 @@ def build_privacy_budget_manager_from_args(
             None if noise_multiplier is None else float(noise_multiplier)
         ),
         epsilon_floor=None if epsilon_floor is None else float(epsilon_floor),
+        budget_growth_factor=budget_growth_factor,
     )
 
 

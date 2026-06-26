@@ -172,6 +172,17 @@ def build_parser() -> argparse.ArgumentParser:
         default=41,
         help="Seed used to assign scenario privacy budgets to clients.",
     )
+    parser.add_argument(
+        "--budget_growth_factor",
+        type=float,
+        default=1.0,
+        help=(
+            "Slowdown factor for per-client privacy budget accumulation. "
+            "The RDP-computed epsilon is multiplied by this factor before "
+            "comparison against the client's budget limit. Values < 1.0 "
+            "make the budget grow slower, allowing more training rounds."
+        ),
+    )
 
     parser.add_argument(
         "--fisher_threshold",

@@ -194,6 +194,9 @@ class AdapL(FederatedMethod):
                     noise_multiplier=noise_multiplier,
                     target_delta=self.args.delta,
                     target_epsilon=target_epsilon,
+                    budget_growth_factor=float(
+                        getattr(self.args, "budget_growth_factor", 1.0)
+                    ),
                 )
             self.planned_steps_by_client[client_id] = planned_steps
 
