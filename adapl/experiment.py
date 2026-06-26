@@ -116,6 +116,19 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     clipped_norms = _float_metadata_values(client_updates, "clipped_norm")
     clip_factors = _float_metadata_values(client_updates, "clip_factor")
     clip_fractions = _float_metadata_values(client_updates, "clip_fraction")
+    layer_clip_factors = _float_metadata_values(client_updates, "layer_clip_factor")
+    coordinate_clip_fractions = _float_metadata_values(
+        client_updates,
+        "coordinate_clip_fraction",
+    )
+    coordinate_clip_radii = _float_metadata_values(
+        client_updates,
+        "coordinate_clip_radius",
+    )
+    privacy_clip_scales = _float_metadata_values(
+        client_updates,
+        "privacy_clip_scale",
+    )
     sample_grad_norms = _float_metadata_values(client_updates, "sample_grad_norm")
     sample_grad_norm_p50s = _float_metadata_values(
         client_updates, "sample_grad_norm_p50"
@@ -183,9 +196,25 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     if clip_factors:
         metrics["dp_clip_factor_mean"] = sum(clip_factors) / len(clip_factors)
         metrics["dp_clip_factor_min"] = min(clip_factors)
+    if layer_clip_factors:
+        metrics["adapl_layer_clip_factor_mean"] = (
+            sum(layer_clip_factors) / len(layer_clip_factors)
+        )
     if clip_fractions:
         metrics["adapl_clip_fraction_mean"] = sum(clip_fractions) / len(
             clip_fractions
+        )
+    if coordinate_clip_fractions:
+        metrics["adapl_coordinate_clip_fraction_mean"] = (
+            sum(coordinate_clip_fractions) / len(coordinate_clip_fractions)
+        )
+    if coordinate_clip_radii:
+        metrics["adapl_coordinate_clip_radius_mean"] = (
+            sum(coordinate_clip_radii) / len(coordinate_clip_radii)
+        )
+    if privacy_clip_scales:
+        metrics["adapl_privacy_clip_scale_mean"] = (
+            sum(privacy_clip_scales) / len(privacy_clip_scales)
         )
     if sample_grad_norms:
         metrics["adapl_sample_grad_norm_mean"] = sum(sample_grad_norms) / len(

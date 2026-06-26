@@ -68,6 +68,8 @@ class AdapL(FederatedMethod):
             raise ValueError("--adapl_alpha/--phi must be in [0, 1].")
         if args.adapl_noise_decay_factor <= 0:
             raise ValueError("--adapl_noise_decay_factor/--decay_factor must be positive.")
+        if args.adapl_accuracy_window <= 0:
+            raise ValueError("--adapl_accuracy_window/--adapl_s must be positive.")
         if args.max_clip_norm is not None and args.max_clip_norm <= 0:
             raise ValueError("--max_clip_norm must be positive.")
         if args.prox_mu < 0:
@@ -79,6 +81,14 @@ class AdapL(FederatedMethod):
         self.client_target_epsilons = (
             self._resolve_client_epsilons() if self.dp_enabled else []
         )
+        if self.dp_enabled and any(
+            epsilon is None for epsilon in self.client_target_epsilons
+        ):
+            raise ValueError(
+                "AdapL requires a target epsilon for each client. Use "
+                "--epsilon_min, --epsilon_max, --privacy_scenario, or "
+                "--epsilon_file/--privacy_budgets instead of a noise-only setup."
+            )
         self.client_privacy: dict[int, _ClientPrivacyState] = {}
         self.accountants: dict[int, MomentsAccountant] = {}
         self.planned_steps_by_client: dict[int, int] = {}
@@ -110,12 +120,16 @@ class AdapL(FederatedMethod):
         elif self.args.epsilon_min is not None:
             epsilon = float(self.args.epsilon_min)
         elif self.args.noise_multiplier is not None:
-            return [None for _ in range(self.args.num_clients)]
+            raise ValueError(
+                "AdapL noise multipliers require target epsilons for mixed "
+                "privacy-weighted aggregation. Provide --epsilon_min, "
+                "--epsilon_max, --privacy_scenario, or "
+                "--epsilon_file/--privacy_budgets."
+            )
         else:
             raise ValueError(
                 "AdapL requires --epsilon_min, --epsilon_max, --privacy_scenario, "
-                "--epsilon_file/--privacy_budgets, --noise_multiplier, or "
-                "--noise_multiplier_override."
+                "or --epsilon_file/--privacy_budgets."
             )
 
         if epsilon <= 0:
@@ -236,6 +250,7 @@ class AdapL(FederatedMethod):
                 f"gamma={self.args.gamma}, "
                 f"adapl_alpha={self.args.adapl_alpha}, "
                 f"adapl_noise_decay_factor={self.args.adapl_noise_decay_factor}, "
+                f"adapl_accuracy_window={self.args.adapl_accuracy_window}, "
                 f"max_clip_norm={self.args.max_clip_norm}, "
                 f"prox_mu={self.args.prox_mu}, "
                 f"nm_decay={self.args.nm_decay}"
@@ -294,6 +309,7 @@ class AdapL(FederatedMethod):
                     "adapl_noise_decay_factor",
                     self.args.adapl_noise_decay_factor,
                 ),
+                ("adapl", "adapl_accuracy_window", self.args.adapl_accuracy_window),
                 ("adapl", "max_clip_norm", self.args.max_clip_norm),
                 ("adapl", "prox_mu", self.args.prox_mu),
                 ("adapl", "nm_decay", self.args.nm_decay),
@@ -343,6 +359,7 @@ class AdapL(FederatedMethod):
             "gamma": self.args.gamma,
             "adapl_alpha": self.args.adapl_alpha,
             "adapl_noise_decay_factor": self.args.adapl_noise_decay_factor,
+            "adapl_accuracy_window": self.args.adapl_accuracy_window,
             "max_clip_norm": self.args.max_clip_norm,
             "prox_mu": self.args.prox_mu,
             "nm_decay": self.args.nm_decay,
@@ -365,6 +382,21 @@ class AdapL(FederatedMethod):
     def begin_round(self, round_idx: int, selected_clients: Sequence[int]) -> None:
         self.current_round_idx = round_idx
         self.current_selected_clients = list(selected_clients)
+
+    def _privacy_clip_scale(self, target_epsilon: float | None) -> float:
+        if target_epsilon is None:
+            return 1.0
+        finite_epsilons = [
+            float(epsilon)
+            for epsilon in self.client_target_epsilons
+            if epsilon is not None
+        ]
+        if not finite_epsilons:
+            return 1.0
+        max_epsilon = max(finite_epsilons)
+        if max_epsilon <= 0:
+            return 1.0
+        return min(1.0, max(0.0, float(target_epsilon) / max_epsilon))
 
     def train_client(
         self,
@@ -452,6 +484,9 @@ class AdapL(FederatedMethod):
                 max_clip_norm=(
                     None if self.disable_clipping else self.args.max_clip_norm
                 ),
+                privacy_clip_scale=self._privacy_clip_scale(
+                    privacy_state.target_epsilon
+                ),
                 prox_mu=self.args.prox_mu,
                 enable_clipping=not self.disable_clipping,
                 enable_noise=not self.disable_noise,
@@ -515,6 +550,11 @@ class AdapL(FederatedMethod):
                 "clip_factor": result.sample_clip_factor_mean,
                 "clip_fraction": result.sample_clip_fraction,
                 "layer_clip_factor": result.layer_clip_factor_mean,
+                "coordinate_clip_fraction": result.coordinate_clip_fraction_mean,
+                "coordinate_clip_radius": result.coordinate_clip_radius_mean,
+                "privacy_clip_scale": self._privacy_clip_scale(
+                    privacy_state.target_epsilon
+                ),
                 "signal_l2": result.signal_l2_mean,
                 "noise_l2": result.noise_l2_mean,
                 "noise_to_signal_ratio": result.noise_to_signal_ratio_mean,
@@ -615,13 +655,12 @@ class AdapL(FederatedMethod):
         )
         is_new_best = test_accuracy > previous_best
         should_decay = False
-        if len(self.test_accuracy_history) >= 2:
-            previous = self.test_accuracy_history[-1]
-            previous_previous = self.test_accuracy_history[-2]
-            should_decay = (
-                test_accuracy >= previous
-                and previous >= previous_previous
-                and is_new_best
+        window = int(self.args.adapl_accuracy_window)
+        if len(self.test_accuracy_history) >= window:
+            sequence = self.test_accuracy_history[-window:] + [float(test_accuracy)]
+            should_decay = is_new_best and all(
+                later >= earlier
+                for earlier, later in zip(sequence, sequence[1:])
             )
 
         self.test_accuracy_history.append(float(test_accuracy))

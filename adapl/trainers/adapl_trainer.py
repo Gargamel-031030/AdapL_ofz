@@ -34,6 +34,8 @@ class AdapLTrainResult:
     sample_clip_factor_mean: float
     sample_clip_fraction: float
     layer_clip_factor_mean: float
+    coordinate_clip_fraction_mean: float
+    coordinate_clip_radius_mean: float
     proximal_norm_mean: float
     noise_std_mean: float
     signal_l2_mean: float
@@ -254,6 +256,7 @@ def _apply_proximal_gradient(
     batch_grads: Mapping[str, torch.Tensor],
     model: nn.Module,
     reference_state: Mapping[str, torch.Tensor],
+    masks: Mapping[str, torch.Tensor],
     prox_mu: float,
 ) -> float:
     if prox_mu < 0:
@@ -270,9 +273,73 @@ def _apply_proximal_gradient(
             continue
         reference = reference.to(device=parameter.device, dtype=parameter.dtype)
         proximal_grad = parameter.detach() - reference
+        mask = masks.get(name)
+        if mask is not None:
+            proximal_grad = proximal_grad * mask.to(
+                device=parameter.device,
+                dtype=parameter.dtype,
+            )
         batch_grads[name].add_(proximal_grad, alpha=prox_mu)
         squared_norm += float(torch.sum(proximal_grad.double() * proximal_grad.double()).item())
     return squared_norm ** 0.5
+
+
+def _apply_decay_coordinate_clipping(
+    model: nn.Module,
+    center_state: Mapping[str, torch.Tensor] | None,
+    reference_state: Mapping[str, torch.Tensor],
+    max_clip_norm: float | None,
+    privacy_clip_scale: float,
+) -> tuple[float, float]:
+    if max_clip_norm is None or center_state is None:
+        return 0.0, 0.0
+    if max_clip_norm <= 0:
+        raise ValueError("max_clip_norm must be positive.")
+    if privacy_clip_scale < 0:
+        raise ValueError("privacy_clip_scale must be non-negative.")
+
+    scale = min(1.0, float(privacy_clip_scale))
+    clipped_coordinates = 0
+    total_coordinates = 0
+    radius_sum = 0.0
+    radius_count = 0
+
+    with torch.no_grad():
+        for name, parameter in model.named_parameters():
+            if not parameter.requires_grad:
+                continue
+            if parameter.numel() == 0:
+                continue
+            center = center_state.get(name)
+            reference = reference_state.get(name)
+            if center is None or reference is None:
+                continue
+            center = center.to(device=parameter.device, dtype=parameter.dtype)
+            reference = reference.to(device=parameter.device, dtype=parameter.dtype)
+            reference_radius = float(
+                torch.max(torch.abs(reference.detach() - center.detach())).item()
+            )
+            radius = (
+                float(max_clip_norm)
+                if reference_radius <= 1e-12
+                else min(float(max_clip_norm), reference_radius)
+            )
+            radius *= scale
+            lower = center - radius
+            upper = center + radius
+            original = parameter.detach().clone()
+            clipped = torch.maximum(torch.minimum(parameter.detach(), upper), lower)
+            parameter.copy_(clipped)
+            clipped_coordinates += int((clipped != original).sum().item())
+            total_coordinates += parameter.numel()
+            radius_sum += radius
+            radius_count += 1
+
+    clip_fraction = (
+        clipped_coordinates / float(total_coordinates) if total_coordinates else 0.0
+    )
+    radius_mean = radius_sum / float(radius_count) if radius_count else 0.0
+    return clip_fraction, radius_mean
 
 
 def _mask_summary(masks: Mapping[str, torch.Tensor]) -> tuple[float, int, int]:
@@ -408,6 +475,8 @@ def _run_adapl_update(
     fisher_mean_by_layer: Mapping[str, float],
     max_clip_norm: float | None,
     global_reference_state: Mapping[str, torch.Tensor],
+    coordinate_clip_center_state: Mapping[str, torch.Tensor] | None,
+    privacy_clip_scale: float,
     prox_mu: float,
     enable_clipping: bool,
     enable_noise: bool,
@@ -439,6 +508,8 @@ def _run_adapl_update(
     sample_count = 0.0
     sample_grad_norm_values: list[float] = []
     layer_clip_factor_sum = 0.0
+    coordinate_clip_fraction_sum = 0.0
+    coordinate_clip_radius_sum = 0.0
     proximal_norm_sum = 0.0
     noise_std_sum = 0.0
     signal_l2_sum = 0.0
@@ -470,6 +541,7 @@ def _run_adapl_update(
             batch_grads=batch_grads,
             model=model,
             reference_state=global_reference_state,
+            masks=masks,
             prox_mu=prox_mu,
         )
         layer_clip_factor = _apply_decay_layer_clipping(batch_grads, max_clip_norm)
@@ -493,6 +565,15 @@ def _run_adapl_update(
         else:
             sigma_min = sigma_max = sigma_mean = std_mean = noise_l2 = 0.0
         _install_gradients_and_step(model, optimizer, batch_grads)
+        coordinate_clip_fraction, coordinate_clip_radius = (
+            _apply_decay_coordinate_clipping(
+                model=model,
+                center_state=coordinate_clip_center_state,
+                reference_state=global_reference_state,
+                max_clip_norm=max_clip_norm,
+                privacy_clip_scale=privacy_clip_scale,
+            )
+        )
 
         total_loss += batch_loss
         total_examples += batch_size
@@ -504,6 +585,8 @@ def _run_adapl_update(
         sample_count += float(batch_stats["sample_count"])
         sample_grad_norm_values.extend(batch_stats["grad_norm_values"])
         layer_clip_factor_sum += layer_clip_factor
+        coordinate_clip_fraction_sum += coordinate_clip_fraction
+        coordinate_clip_radius_sum += coordinate_clip_radius
         noise_std_sum += std_mean
         signal_l2_sum += signal_l2
         noise_l2_sum += noise_l2
@@ -529,6 +612,10 @@ def _run_adapl_update(
         sample_clip_factor_mean=sample_clip_factor_sum / max(1.0, sample_count),
         sample_clip_fraction=clipped_sample_count / max(1.0, sample_count),
         layer_clip_factor_mean=layer_clip_factor_sum / max(1, actual_steps),
+        coordinate_clip_fraction_mean=(
+            coordinate_clip_fraction_sum / max(1, actual_steps)
+        ),
+        coordinate_clip_radius_mean=coordinate_clip_radius_sum / max(1, actual_steps),
         proximal_norm_mean=proximal_norm_sum / max(1, actual_steps),
         noise_std_mean=noise_std_sum / max(1, actual_steps),
         signal_l2_mean=signal_l2_sum / max(1, actual_steps),
@@ -592,6 +679,8 @@ def local_update_first(
         fisher_mean_by_layer=fisher_mean_by_layer,
         max_clip_norm=None,
         global_reference_state=global_state,
+        coordinate_clip_center_state=None,
+        privacy_clip_scale=1.0,
         prox_mu=prox_mu,
         enable_clipping=enable_clipping,
         enable_noise=enable_noise,
@@ -620,6 +709,7 @@ def local_update_decay(
     fisher_estimator: str,
     fisher_batches: int,
     max_clip_norm: float | None,
+    privacy_clip_scale: float,
     prox_mu: float,
     enable_clipping: bool = True,
     enable_noise: bool = True,
@@ -669,6 +759,8 @@ def local_update_decay(
         fisher_mean_by_layer=fisher_mean_by_layer,
         max_clip_norm=max_clip_norm if enable_clipping else None,
         global_reference_state=global_state,
+        coordinate_clip_center_state=latest_global_state,
+        privacy_clip_scale=privacy_clip_scale,
         prox_mu=prox_mu,
         enable_clipping=enable_clipping,
         enable_noise=enable_noise,

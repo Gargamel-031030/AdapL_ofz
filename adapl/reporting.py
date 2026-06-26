@@ -230,7 +230,11 @@ def init_output_csv(path: str) -> None:
                 "adapl_sample_grad_norm_p50_mean",
                 "adapl_sample_grad_norm_p90_mean",
                 "adapl_sample_grad_norm_p99_mean",
+                "adapl_layer_clip_factor_mean",
                 "adapl_clip_fraction_mean",
+                "adapl_coordinate_clip_fraction_mean",
+                "adapl_coordinate_clip_radius_mean",
+                "adapl_privacy_clip_scale_mean",
                 "adapl_signal_l2_mean",
                 "adapl_noise_l2_mean",
                 "adapl_noise_to_signal_ratio_mean",
@@ -328,7 +332,19 @@ def append_output_csv(
                     round_metrics.get("adapl_sample_grad_norm_p99_mean")
                 ),
                 _format_optional_metric(
+                    round_metrics.get("adapl_layer_clip_factor_mean")
+                ),
+                _format_optional_metric(
                     round_metrics.get("adapl_clip_fraction_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_coordinate_clip_fraction_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_coordinate_clip_radius_mean")
+                ),
+                _format_optional_metric(
+                    round_metrics.get("adapl_privacy_clip_scale_mean")
                 ),
                 _format_optional_metric(round_metrics.get("adapl_signal_l2_mean")),
                 _format_optional_metric(round_metrics.get("adapl_noise_l2_mean")),

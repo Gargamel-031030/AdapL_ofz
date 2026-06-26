@@ -214,6 +214,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="AdapL base noise multiplier decay factor after sustained accuracy gains.",
     )
     parser.add_argument(
+        "--adapl_accuracy_window",
+        "--adapl_s",
+        dest="adapl_accuracy_window",
+        type=int,
+        default=2,
+        help=(
+            "Number of previous evaluated accuracies that must form a "
+            "non-decreasing run with the current new best before AdapL decays sigma."
+        ),
+    )
+    parser.add_argument(
         "--max_clip_norm",
         type=float,
         default=None,
@@ -580,6 +591,8 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
         raise ValueError("--adapl_alpha/--phi must be in [0, 1].")
     if args.adapl_noise_decay_factor <= 0:
         raise ValueError("--adapl_noise_decay_factor/--decay_factor must be positive.")
+    if args.adapl_accuracy_window <= 0:
+        raise ValueError("--adapl_accuracy_window/--adapl_s must be positive.")
     if args.max_clip_norm is not None and args.max_clip_norm <= 0:
         raise ValueError("--max_clip_norm must be positive.")
     if args.prox_mu < 0:
