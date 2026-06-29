@@ -56,8 +56,8 @@ class AdapL(FederatedMethod):
                 raise ValueError("--clipping_bound/--clipping_norm must be positive.")
             if args.delta is None or not 0 < args.delta < 1:
                 raise ValueError("--target_delta/--delta must be in (0, 1).")
-        if not 0 <= args.fisher_threshold <= 1:
-            raise ValueError("--fisher_threshold must be in [0, 1].")
+        if args.fisher_threshold < 0:
+            raise ValueError("--fisher_threshold must be non-negative.")
         if args.fisher_estimator not in {"sample", "batch"}:
             raise ValueError("--fisher_estimator must be sample or batch.")
         if args.fisher_batches < 0:
@@ -177,7 +177,6 @@ class AdapL(FederatedMethod):
                     manual_override=self.args.noise_multiplier_override
                     if self.args.noise_multiplier_override is not None
                     else self.args.noise_multiplier,
-                    use_decay_search=self.args.nm_decay,
                     fallback_epsilon=self.args.epsilon_min,
                 )
                 noise_multiplier = noise_init.noise_multiplier
@@ -233,9 +232,9 @@ class AdapL(FederatedMethod):
                 "Fisher masking, Gaussian noise, epsilon, and delta are disabled."
             ]
         gradient_mode = (
-            "per_sample_unclipped_then_averaged"
+            "batch_gradient_unclipped"
             if self.disable_clipping
-            else "per_sample_clipped_then_averaged"
+            else "batch_gradient_clipped"
         )
         noise_mode = "disabled" if self.disable_noise else self.noise_scope
         fisher_mode = "disabled_all_true_masks" if self.disable_fisher else "enabled"
@@ -401,6 +400,24 @@ class AdapL(FederatedMethod):
             return 1.0
         return min(1.0, max(0.0, float(target_epsilon) / max_epsilon))
 
+    def _privacy_level(self, target_epsilon: float | None) -> float:
+        if target_epsilon is None:
+            return 1.0
+        levels = sorted(
+            {
+                float(epsilon)
+                for epsilon in self.client_target_epsilons
+                if epsilon is not None
+            }
+        )
+        if not levels:
+            return 1.0
+        for index, epsilon in enumerate(levels, start=1):
+            if math.isclose(float(target_epsilon), epsilon):
+                return float(index)
+        lower_or_equal = [epsilon for epsilon in levels if epsilon <= target_epsilon]
+        return float(len(lower_or_equal) if lower_or_equal else 1)
+
     def train_client(
         self,
         client_id: int,
@@ -452,15 +469,17 @@ class AdapL(FederatedMethod):
                 local_epochs=self.args.local_epochs,
                 local_update_mode=self.args.local_update_mode,
                 lr=self.args.lr,
-                momentum=self.args.momentum,
-                weight_decay=self.args.weight_decay,
                 device=device,
                 clipping_bound=self.args.clipping_norm,
                 base_noise_multiplier=privacy_state.noise_multiplier,
                 gamma=self.args.gamma,
+                fisher_threshold=self.args.fisher_threshold,
+                fisher_estimator=self.args.fisher_estimator,
+                fisher_batches=self.args.fisher_batches,
                 prox_mu=self.args.prox_mu,
                 enable_clipping=not self.disable_clipping,
                 enable_noise=not self.disable_noise,
+                enable_fisher=not self.disable_fisher,
                 noise_scope=self.noise_scope,
                 freeze_batch_norm=self.freeze_batch_norm,
             )
@@ -475,8 +494,6 @@ class AdapL(FederatedMethod):
                 local_epochs=self.args.local_epochs,
                 local_update_mode=self.args.local_update_mode,
                 lr=self.args.lr,
-                momentum=self.args.momentum,
-                weight_decay=self.args.weight_decay,
                 device=device,
                 clipping_bound=self.args.clipping_norm,
                 base_noise_multiplier=privacy_state.noise_multiplier,
@@ -487,7 +504,7 @@ class AdapL(FederatedMethod):
                 max_clip_norm=(
                     None if self.disable_clipping else self.args.max_clip_norm
                 ),
-                privacy_clip_scale=self._privacy_clip_scale(
+                privacy_level=self._privacy_level(
                     privacy_state.target_epsilon
                 ),
                 prox_mu=self.args.prox_mu,
@@ -558,6 +575,7 @@ class AdapL(FederatedMethod):
                 "privacy_clip_scale": self._privacy_clip_scale(
                     privacy_state.target_epsilon
                 ),
+                "privacy_level": self._privacy_level(privacy_state.target_epsilon),
                 "signal_l2": result.signal_l2_mean,
                 "noise_l2": result.noise_l2_mean,
                 "noise_to_signal_ratio": result.noise_to_signal_ratio_mean,
@@ -662,7 +680,7 @@ class AdapL(FederatedMethod):
         if len(self.test_accuracy_history) >= window:
             sequence = self.test_accuracy_history[-window:] + [float(test_accuracy)]
             should_decay = is_new_best and all(
-                later >= earlier
+                later > earlier
                 for earlier, later in zip(sequence, sequence[1:])
             )
 

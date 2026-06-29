@@ -72,7 +72,6 @@ def initialize_noise_multiplier(
     q: float,
     total_steps: int,
     manual_override: float | None = None,
-    use_decay_search: bool = False,
     fallback_epsilon: float | None = None,
 ) -> NoiseInitialization:
     if manual_override is not None:
@@ -88,7 +87,7 @@ def initialize_noise_multiplier(
     if epsilon <= 0:
         raise ValueError("target epsilon must be positive.")
 
-    if use_decay_search:
+    if total_steps > 0:
         return NoiseInitialization(
             search_noise_multiplier(
                 target_epsilon=epsilon,
@@ -96,7 +95,7 @@ def initialize_noise_multiplier(
                 q=q,
                 total_steps=total_steps,
             ),
-            "decay_search",
+            "moments_accountant_search",
         )
     return NoiseInitialization(
         closed_form_noise_multiplier(epsilon, target_delta),

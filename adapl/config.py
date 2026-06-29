@@ -188,7 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--fisher_threshold",
         type=float,
         default=0.4,
-        help="AdapL Fisher mask threshold in [0, 1].",
+        help="AdapL Fisher mask threshold: Im_i = 1 if F_i >= threshold.",
     )
     parser.add_argument(
         "--fisher_estimator",
@@ -205,7 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--gamma",
         type=float,
-        default=0.0,
+        default=10.0,
         help="AdapL layer-wise noise multiplier strength.",
     )
     parser.add_argument(
@@ -229,7 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--adapl_s",
         dest="adapl_accuracy_window",
         type=int,
-        default=2,
+        default=3,
         help=(
             "Number of previous evaluated accuracies that must form a "
             "non-decreasing run with the current new best before AdapL decays sigma."
@@ -238,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--max_clip_norm",
         type=float,
-        default=None,
+        default=4.0,
         help="Optional AdapL decay-stage per-layer clipping norm.",
     )
     parser.add_argument(
@@ -594,8 +594,8 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
 
     if args.fisher_batches < 0:
         raise ValueError("--fisher_batches must be non-negative.")
-    if not 0 <= args.fisher_threshold <= 1:
-        raise ValueError("--fisher_threshold must be in [0, 1].")
+    if args.fisher_threshold < 0:
+        raise ValueError("--fisher_threshold must be non-negative.")
     if args.gamma < 0:
         raise ValueError("--gamma must be non-negative.")
     if not 0 <= args.adapl_alpha <= 1:

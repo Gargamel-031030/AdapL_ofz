@@ -99,20 +99,34 @@ def make_important_masks(
     fisher_diag: Mapping[str, torch.Tensor],
     threshold: float,
 ) -> dict[str, torch.Tensor]:
-    """Build boolean masks from per-layer max-normalized Fisher scores."""
-    if not 0 <= threshold <= 1:
-        raise ValueError("threshold must be in [0, 1].")
+    """Build boolean masks using Eq. (8): Im_i = 1 if F_i >= kappa."""
+    if threshold < 0:
+        raise ValueError("threshold must be non-negative.")
 
     masks: Dict[str, torch.Tensor] = {}
     for name, score in fisher_diag.items():
         score = score.detach()
-        max_score = torch.max(score)
-        if float(max_score.item()) > 0:
-            normalized = score / max_score
-            masks[name] = (normalized >= threshold).detach().cpu()
-        else:
-            masks[name] = torch.zeros_like(score, dtype=torch.bool).cpu()
+        masks[name] = (score >= threshold).detach().cpu()
     return masks
+
+
+def fisher_important_means(
+    fisher_diag: Mapping[str, torch.Tensor],
+    masks: Mapping[str, torch.Tensor],
+) -> dict[str, float]:
+    """Return mean Fisher values over important coordinates layer-wise."""
+    means: dict[str, float] = {}
+    for name, score in fisher_diag.items():
+        mask = masks.get(name)
+        if mask is None:
+            means[name] = 0.0
+            continue
+        mask = mask.to(device=score.device, dtype=torch.bool)
+        if not bool(mask.any().item()):
+            means[name] = 0.0
+        else:
+            means[name] = float(score.detach().float()[mask].mean().item())
+    return means
 
 
 def all_trainable_important_masks(model: nn.Module) -> dict[str, torch.Tensor]:

@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from adapl.fisher import (
     all_trainable_important_masks,
     compute_fisher_diag,
-    fisher_means,
+    fisher_important_means,
     make_important_masks,
 )
 from adapl.noise_strategy import LayerNoiseStats, layerwise_noise_stats
@@ -232,6 +232,52 @@ def _per_sample_clipped_batch_gradient(
     )
 
 
+def _batch_gradient(
+    model: nn.Module,
+    criterion: nn.Module,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    device: torch.device,
+) -> tuple[dict[str, torch.Tensor], float, int, dict[str, object]]:
+    inputs = inputs.to(device, non_blocking=True)
+    targets = targets.to(device, non_blocking=True)
+    batch_size = int(targets.size(0))
+    if batch_size <= 0:
+        raise ValueError("Empty minibatch is not supported.")
+
+    model.zero_grad(set_to_none=True)
+    logits = model(inputs)
+    loss = criterion(logits, targets)
+    loss.backward()
+
+    named_parameters = _trainable_named_parameters(model)
+    batch_grads: dict[str, torch.Tensor] = {}
+    squared_norm = 0.0
+    for name, parameter in named_parameters:
+        if parameter.grad is None:
+            batch_grads[name] = torch.zeros_like(parameter, device=device)
+            continue
+        grad = parameter.grad.detach().clone()
+        batch_grads[name] = grad
+        squared_norm += float(torch.sum(grad.double() * grad.double()).item())
+
+    grad_norm = squared_norm ** 0.5
+    model.zero_grad(set_to_none=True)
+    return (
+        batch_grads,
+        float(loss.item()) * batch_size,
+        batch_size,
+        {
+            "grad_norm_sum": grad_norm * batch_size,
+            "clipped_norm_sum": grad_norm * batch_size,
+            "clip_factor_sum": float(batch_size),
+            "clipped_sample_count": 0.0,
+            "sample_count": float(batch_size),
+            "grad_norm_values": [grad_norm],
+        },
+    )
+
+
 def _apply_decay_layer_clipping(
     batch_grads: Mapping[str, torch.Tensor],
     max_clip_norm: float | None,
@@ -250,6 +296,19 @@ def _apply_decay_layer_clipping(
         factor_sum += factor
         count += 1
     return factor_sum / max(1, count)
+
+
+def _apply_default_gradient_clipping(
+    batch_grads: Mapping[str, torch.Tensor],
+    clipping_bound: float,
+) -> float:
+    if clipping_bound <= 0:
+        raise ValueError("clipping_bound must be positive.")
+    grad_norm = _l2_norm(batch_grads)
+    factor = min(1.0, clipping_bound / (grad_norm + 1e-12))
+    for grad in batch_grads.values():
+        grad.mul_(factor)
+    return factor
 
 
 def _apply_proximal_gradient(
@@ -279,67 +338,111 @@ def _apply_proximal_gradient(
                 device=parameter.device,
                 dtype=parameter.dtype,
             )
-        batch_grads[name].add_(proximal_grad, alpha=prox_mu)
+        batch_grads[name].add_(proximal_grad, alpha=2.0 * prox_mu)
         squared_norm += float(torch.sum(proximal_grad.double() * proximal_grad.double()).item())
     return squared_norm ** 0.5
 
 
-def _apply_decay_coordinate_clipping(
+def _apply_layerwise_gradient_clipping(
+    batch_grads: Mapping[str, torch.Tensor],
     model: nn.Module,
-    center_state: Mapping[str, torch.Tensor] | None,
-    reference_state: Mapping[str, torch.Tensor],
-    max_clip_norm: float | None,
-    privacy_clip_scale: float,
-) -> tuple[float, float]:
-    if max_clip_norm is None or center_state is None:
-        return 0.0, 0.0
+    best_global_state: Mapping[str, torch.Tensor],
+    learning_rate: float,
+    privacy_level: float,
+    max_clip_norm: float,
+) -> tuple[float, float, float, dict[str, float]]:
+    if learning_rate <= 0:
+        raise ValueError("learning_rate must be positive.")
     if max_clip_norm <= 0:
         raise ValueError("max_clip_norm must be positive.")
-    if privacy_clip_scale < 0:
-        raise ValueError("privacy_clip_scale must be non-negative.")
+    if privacy_level <= 0:
+        raise ValueError("privacy_level must be positive.")
 
-    scale = min(1.0, float(privacy_clip_scale))
     clipped_coordinates = 0
     total_coordinates = 0
     radius_sum = 0.0
     radius_count = 0
+    layer_factor_sum = 0.0
+    layer_count = 0
+    layer_noise_bounds: dict[str, float] = {}
 
+    with torch.no_grad():
+        for name, parameter in model.named_parameters():
+            if not parameter.requires_grad or name not in batch_grads:
+                continue
+            if parameter.numel() == 0:
+                continue
+            best_value = best_global_state.get(name)
+            if best_value is None:
+                continue
+            best_value = best_value.to(device=parameter.device, dtype=parameter.dtype)
+            best_detached = best_value.detach()
+            min_val = torch.min(best_detached)
+            max_val = torch.max(best_detached)
+            center = (min_val + max_val) / 2.0
+            radius = (max_val - min_val) / 2.0 * float(privacy_level)
+            lower_parameter = center - radius
+            upper_parameter = center + radius
+
+            lower_grad = (parameter.detach() - upper_parameter) / learning_rate
+            upper_grad = (parameter.detach() - lower_parameter) / learning_rate
+
+            grad = batch_grads[name]
+            original = grad.detach().clone()
+            clipped = torch.maximum(torch.minimum(grad, upper_grad), lower_grad)
+            grad.copy_(clipped)
+            clipped_coordinates += int((clipped != original).sum().item())
+            total_coordinates += grad.numel()
+            radius_sum += float(radius.item())
+            radius_count += 1
+
+            layer_norm = float(grad.detach().norm(2).item())
+            factor = min(1.0, float(max_clip_norm) / (layer_norm + 1e-12))
+            grad.mul_(factor)
+            layer_factor_sum += factor
+            layer_count += 1
+            layer_noise_bounds[name] = float(radius.item()) / learning_rate
+
+    coordinate_clip_fraction = (
+        clipped_coordinates / float(total_coordinates) if total_coordinates else 0.0
+    )
+    radius_mean = radius_sum / float(radius_count) if radius_count else 0.0
+    layer_factor_mean = layer_factor_sum / float(layer_count) if layer_count else 1.0
+    return (
+        layer_factor_mean,
+        coordinate_clip_fraction,
+        radius_mean,
+        layer_noise_bounds,
+    )
+
+
+def _manual_gradient_step(
+    model: nn.Module,
+    batch_grads: Mapping[str, torch.Tensor],
+    learning_rate: float,
+) -> None:
+    if learning_rate <= 0:
+        raise ValueError("learning_rate must be positive.")
     with torch.no_grad():
         for name, parameter in model.named_parameters():
             if not parameter.requires_grad:
                 continue
-            if parameter.numel() == 0:
+            grad = batch_grads.get(name)
+            if grad is None:
                 continue
-            center = center_state.get(name)
-            reference = reference_state.get(name)
-            if center is None or reference is None:
-                continue
-            center = center.to(device=parameter.device, dtype=parameter.dtype)
-            reference = reference.to(device=parameter.device, dtype=parameter.dtype)
-            reference_radius = float(
-                torch.max(torch.abs(reference.detach() - center.detach())).item()
-            )
-            radius = (
-                float(max_clip_norm)
-                if reference_radius <= 1e-12
-                else min(float(max_clip_norm), reference_radius)
-            )
-            radius *= scale
-            lower = center - radius
-            upper = center + radius
-            original = parameter.detach().clone()
-            clipped = torch.maximum(torch.minimum(parameter.detach(), upper), lower)
-            parameter.copy_(clipped)
-            clipped_coordinates += int((clipped != original).sum().item())
-            total_coordinates += parameter.numel()
-            radius_sum += radius
-            radius_count += 1
+            parameter.add_(grad, alpha=-learning_rate)
 
-    clip_fraction = (
-        clipped_coordinates / float(total_coordinates) if total_coordinates else 0.0
-    )
-    radius_mean = radius_sum / float(radius_count) if radius_count else 0.0
-    return clip_fraction, radius_mean
+
+def _masked_fisher_means(
+    fisher_mean_by_layer: Mapping[str, float],
+    masks: Mapping[str, torch.Tensor],
+) -> dict[str, float]:
+    means = {}
+    for name, value in fisher_mean_by_layer.items():
+        mask = masks.get(name)
+        if mask is None or bool(mask.any().item()):
+            means[name] = float(value)
+    return means
 
 
 def _mask_summary(masks: Mapping[str, torch.Tensor]) -> tuple[float, int, int]:
@@ -465,8 +568,6 @@ def _run_adapl_update(
     local_epochs: Optional[int],
     local_update_mode: str,
     lr: float,
-    momentum: float,
-    weight_decay: float,
     device: torch.device,
     clipping_bound: float,
     base_noise_multiplier: float,
@@ -476,7 +577,7 @@ def _run_adapl_update(
     max_clip_norm: float | None,
     global_reference_state: Mapping[str, torch.Tensor],
     coordinate_clip_center_state: Mapping[str, torch.Tensor] | None,
-    privacy_clip_scale: float,
+    privacy_level: float,
     prox_mu: float,
     enable_clipping: bool,
     enable_noise: bool,
@@ -487,12 +588,6 @@ def _run_adapl_update(
         raise ValueError("noise_scope must be 'fisher' or 'all'.")
     model.train()
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(
-        model.parameters(),
-        lr=lr,
-        momentum=momentum,
-        weight_decay=weight_decay,
-    )
 
     named_parameters = _trainable_named_parameters(model)
     if not fisher_mean_by_layer:
@@ -525,17 +620,12 @@ def _run_adapl_update(
         local_epochs,
         local_update_mode,
     ):
-        batch_grads, batch_loss, batch_size, batch_stats = (
-            _per_sample_clipped_batch_gradient(
-                model=model,
-                criterion=criterion,
-                inputs=inputs,
-                targets=targets,
-                device=device,
-                clipping_bound=clipping_bound,
-                enable_clipping=enable_clipping,
-                freeze_batch_norm=freeze_batch_norm,
-            )
+        batch_grads, batch_loss, batch_size, batch_stats = _batch_gradient(
+            model=model,
+            criterion=criterion,
+            inputs=inputs,
+            targets=targets,
+            device=device,
         )
         proximal_norm_sum += _apply_proximal_gradient(
             batch_grads=batch_grads,
@@ -544,15 +634,42 @@ def _run_adapl_update(
             masks=masks,
             prox_mu=prox_mu,
         )
-        layer_clip_factor = _apply_decay_layer_clipping(batch_grads, max_clip_norm)
+        if enable_clipping and coordinate_clip_center_state is not None:
+            if max_clip_norm is None:
+                raise ValueError("max_clip_norm is required for layer-wise clipping.")
+            (
+                layer_clip_factor,
+                coordinate_clip_fraction,
+                coordinate_clip_radius,
+                noise_bounds,
+            ) = _apply_layerwise_gradient_clipping(
+                batch_grads=batch_grads,
+                model=model,
+                best_global_state=coordinate_clip_center_state,
+                learning_rate=lr,
+                privacy_level=privacy_level,
+                max_clip_norm=max_clip_norm,
+            )
+        elif enable_clipping:
+            layer_clip_factor = _apply_default_gradient_clipping(
+                batch_grads,
+                clipping_bound,
+            )
+            coordinate_clip_fraction = 0.0
+            coordinate_clip_radius = 0.0
+            noise_bounds = {name: float(clipping_bound) for name in batch_grads}
+        else:
+            layer_clip_factor = 1.0
+            coordinate_clip_fraction = 0.0
+            coordinate_clip_radius = 0.0
+            noise_bounds = {name: float(clipping_bound) for name in batch_grads}
         signal_l2 = _l2_norm(batch_grads)
         if enable_noise:
             stats_by_layer = layerwise_noise_stats(
                 base_noise_multiplier=base_noise_multiplier,
                 fisher_mean_by_layer=fisher_mean_by_layer,
                 gamma=gamma,
-                clipping_bound=clipping_bound,
-                batch_size=batch_size,
+                clipping_bound=noise_bounds,
             )
             sigma_min, sigma_max, sigma_mean, std_mean, noise_l2 = (
                 _apply_masked_noise(
@@ -564,16 +681,7 @@ def _run_adapl_update(
             )
         else:
             sigma_min = sigma_max = sigma_mean = std_mean = noise_l2 = 0.0
-        _install_gradients_and_step(model, optimizer, batch_grads)
-        coordinate_clip_fraction, coordinate_clip_radius = (
-            _apply_decay_coordinate_clipping(
-                model=model,
-                center_state=coordinate_clip_center_state,
-                reference_state=global_reference_state,
-                max_clip_norm=max_clip_norm,
-                privacy_clip_scale=privacy_clip_scale,
-            )
-        )
+        _manual_gradient_step(model, batch_grads, lr)
 
         total_loss += batch_loss
         total_examples += batch_size
@@ -642,65 +750,6 @@ def local_update_first(
     local_epochs: Optional[int],
     local_update_mode: str,
     lr: float,
-    momentum: float,
-    weight_decay: float,
-    device: torch.device,
-    clipping_bound: float,
-    base_noise_multiplier: float,
-    gamma: float,
-    prox_mu: float,
-    enable_clipping: bool = True,
-    enable_noise: bool = True,
-    noise_scope: str = "fisher",
-    freeze_batch_norm: bool = False,
-) -> AdapLTrainResult:
-    model = model_fn().to(device)
-    model.load_state_dict(global_state)
-    masks = all_trainable_important_masks(model)
-    fisher_mean_by_layer = {
-        name: 0.0
-        for name, parameter in model.named_parameters()
-        if parameter.requires_grad
-    }
-    return _run_adapl_update(
-        model=model,
-        train_loader=train_loader,
-        local_steps=local_steps,
-        local_epochs=local_epochs,
-        local_update_mode=local_update_mode,
-        lr=lr,
-        momentum=momentum,
-        weight_decay=weight_decay,
-        device=device,
-        clipping_bound=clipping_bound,
-        base_noise_multiplier=base_noise_multiplier,
-        gamma=gamma,
-        masks=masks,
-        fisher_mean_by_layer=fisher_mean_by_layer,
-        max_clip_norm=None,
-        global_reference_state=global_state,
-        coordinate_clip_center_state=None,
-        privacy_clip_scale=1.0,
-        prox_mu=prox_mu,
-        enable_clipping=enable_clipping,
-        enable_noise=enable_noise,
-        noise_scope=noise_scope,
-        freeze_batch_norm=freeze_batch_norm,
-    )
-
-
-def local_update_decay(
-    *,
-    model_fn: Callable[[], nn.Module],
-    global_state: OrderedDict[str, torch.Tensor],
-    latest_global_state: OrderedDict[str, torch.Tensor],
-    train_loader: DataLoader,
-    local_steps: int,
-    local_epochs: Optional[int],
-    local_update_mode: str,
-    lr: float,
-    momentum: float,
-    weight_decay: float,
     device: torch.device,
     clipping_bound: float,
     base_noise_multiplier: float,
@@ -708,8 +757,6 @@ def local_update_decay(
     fisher_threshold: float,
     fisher_estimator: str,
     fisher_batches: int,
-    max_clip_norm: float | None,
-    privacy_clip_scale: float,
     prox_mu: float,
     enable_clipping: bool = True,
     enable_noise: bool = True,
@@ -719,7 +766,7 @@ def local_update_decay(
 ) -> AdapLTrainResult:
     if enable_fisher:
         fisher_model = model_fn().to(device)
-        fisher_model.load_state_dict(latest_global_state)
+        fisher_model.load_state_dict(global_state)
         fisher_diag = compute_fisher_diag(
             fisher_model,
             train_loader,
@@ -728,7 +775,7 @@ def local_update_decay(
             max_batches=None if fisher_batches == 0 else fisher_batches,
         )
         masks = make_important_masks(fisher_diag, fisher_threshold)
-        fisher_mean_by_layer = fisher_means(fisher_diag)
+        fisher_mean_by_layer = fisher_important_means(fisher_diag, masks)
         del fisher_model
     else:
         mask_model = model_fn().to(device)
@@ -749,8 +796,82 @@ def local_update_decay(
         local_epochs=local_epochs,
         local_update_mode=local_update_mode,
         lr=lr,
-        momentum=momentum,
-        weight_decay=weight_decay,
+        device=device,
+        clipping_bound=clipping_bound,
+        base_noise_multiplier=base_noise_multiplier,
+        gamma=gamma,
+        masks=masks,
+        fisher_mean_by_layer=fisher_mean_by_layer,
+        max_clip_norm=None,
+        global_reference_state=global_state,
+        coordinate_clip_center_state=None,
+        privacy_level=1.0,
+        prox_mu=prox_mu,
+        enable_clipping=enable_clipping,
+        enable_noise=enable_noise,
+        noise_scope=noise_scope,
+        freeze_batch_norm=freeze_batch_norm,
+    )
+
+
+def local_update_decay(
+    *,
+    model_fn: Callable[[], nn.Module],
+    global_state: OrderedDict[str, torch.Tensor],
+    latest_global_state: OrderedDict[str, torch.Tensor],
+    train_loader: DataLoader,
+    local_steps: int,
+    local_epochs: Optional[int],
+    local_update_mode: str,
+    lr: float,
+    device: torch.device,
+    clipping_bound: float,
+    base_noise_multiplier: float,
+    gamma: float,
+    fisher_threshold: float,
+    fisher_estimator: str,
+    fisher_batches: int,
+    max_clip_norm: float | None,
+    privacy_level: float,
+    prox_mu: float,
+    enable_clipping: bool = True,
+    enable_noise: bool = True,
+    enable_fisher: bool = True,
+    noise_scope: str = "fisher",
+    freeze_batch_norm: bool = False,
+) -> AdapLTrainResult:
+    if enable_fisher:
+        fisher_model = model_fn().to(device)
+        fisher_model.load_state_dict(global_state)
+        fisher_diag = compute_fisher_diag(
+            fisher_model,
+            train_loader,
+            device,
+            estimator=fisher_estimator,
+            max_batches=None if fisher_batches == 0 else fisher_batches,
+        )
+        masks = make_important_masks(fisher_diag, fisher_threshold)
+        fisher_mean_by_layer = fisher_important_means(fisher_diag, masks)
+        del fisher_model
+    else:
+        mask_model = model_fn().to(device)
+        masks = all_trainable_important_masks(mask_model)
+        fisher_mean_by_layer = {
+            name: 0.0
+            for name, parameter in mask_model.named_parameters()
+            if parameter.requires_grad
+        }
+        del mask_model
+
+    model = model_fn().to(device)
+    model.load_state_dict(global_state)
+    return _run_adapl_update(
+        model=model,
+        train_loader=train_loader,
+        local_steps=local_steps,
+        local_epochs=local_epochs,
+        local_update_mode=local_update_mode,
+        lr=lr,
         device=device,
         clipping_bound=clipping_bound,
         base_noise_multiplier=base_noise_multiplier,
@@ -760,7 +881,7 @@ def local_update_decay(
         max_clip_norm=max_clip_norm if enable_clipping else None,
         global_reference_state=global_state,
         coordinate_clip_center_state=latest_global_state,
-        privacy_clip_scale=privacy_clip_scale,
+        privacy_level=privacy_level,
         prox_mu=prox_mu,
         enable_clipping=enable_clipping,
         enable_noise=enable_noise,
