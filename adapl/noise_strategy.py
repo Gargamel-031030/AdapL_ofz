@@ -5,6 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+FISHER_EPS: float = 1e-12
+MAX_NOISE_RATIO: float = 100.0
+
 
 @dataclass(frozen=True)
 class LayerNoiseStats:
@@ -16,6 +19,7 @@ def layerwise_sigmas(
     base_noise_multiplier: float,
     fisher_mean_by_layer: Mapping[str, float],
     gamma: float,
+    max_noise_ratio: float = MAX_NOISE_RATIO,
 ) -> dict[str, float]:
     """Scale per-layer sigma from Eq. (15) in the AdapL paper."""
     if base_noise_multiplier <= 0:
@@ -26,20 +30,17 @@ def layerwise_sigmas(
         return {}
 
     means = {
-        name: max(0.0, float(value))
+        name: float(value)
         for name, value in fisher_mean_by_layer.items()
     }
-    positive_means = [value for value in means.values() if value > 0.0]
-    if not positive_means:
-        return {name: float(base_noise_multiplier) for name in means}
-
-    min_mean = min(positive_means)
+    min_mean = min(max(v, FISHER_EPS) for v in means.values())
     sigmas: dict[str, float] = {}
     for name, mean_value in means.items():
         adjusted_mean = max(mean_value, min_mean)
-        sigmas[name] = float(base_noise_multiplier) * (
-            1.0 + ((adjusted_mean - min_mean) / min_mean) * gamma
-        )
+        noise_ratio = 1.0 + ((adjusted_mean - min_mean) / min_mean) * gamma
+        if noise_ratio > max_noise_ratio:
+            noise_ratio = max_noise_ratio
+        sigmas[name] = float(base_noise_multiplier) * noise_ratio
     return sigmas
 
 
@@ -49,20 +50,20 @@ def layerwise_noise_stats(
     fisher_mean_by_layer: Mapping[str, float],
     gamma: float,
     clipping_bound: float | Mapping[str, float],
+    max_noise_ratio: float = MAX_NOISE_RATIO,
 ) -> dict[str, LayerNoiseStats]:
     sigmas = layerwise_sigmas(
         base_noise_multiplier=base_noise_multiplier,
         fisher_mean_by_layer=fisher_mean_by_layer,
         gamma=gamma,
+        max_noise_ratio=max_noise_ratio,
     )
     stats: dict[str, LayerNoiseStats] = {}
     for name, sigma in sigmas.items():
         if isinstance(clipping_bound, Mapping):
-            bound = float(clipping_bound.get(name, 0.0))
+            bound = max(float(clipping_bound.get(name, FISHER_EPS)), FISHER_EPS)
         else:
-            bound = float(clipping_bound)
-        if bound <= 0:
-            raise ValueError("clipping_bound must be positive.")
+            bound = max(float(clipping_bound), FISHER_EPS)
         stats[name] = LayerNoiseStats(
             sigma=sigma,
             std=sigma * bound,

@@ -47,6 +47,10 @@ class AdapLTrainResult:
     important_ratio: float
     important_params: int
     total_params: int
+    min_fisher_mean: float = 0.0
+    max_fisher_mean: float = 0.0
+    max_noise_ratio: float = 0.0
+    fallback_layers: str = ""
 
 
 def _trainable_named_parameters(model: nn.Module) -> list[tuple[str, nn.Parameter]]:
@@ -401,7 +405,8 @@ def _apply_layerwise_gradient_clipping(
             grad.mul_(factor)
             layer_factor_sum += factor
             layer_count += 1
-            layer_noise_bounds[name] = float(radius.item()) / learning_rate
+            noise_bound = max(float(radius.item()) / learning_rate, 1e-12)
+            layer_noise_bounds[name] = noise_bound
 
     coordinate_clip_fraction = (
         clipped_coordinates / float(total_coordinates) if total_coordinates else 0.0
@@ -440,7 +445,7 @@ def _masked_fisher_means(
     means = {}
     for name, value in fisher_mean_by_layer.items():
         mask = masks.get(name)
-        if mask is None or bool(mask.any().item()):
+        if mask is not None and bool(mask.any().item()):
             means[name] = float(value)
     return means
 
@@ -614,6 +619,12 @@ def _run_adapl_update(
     noise_multiplier_max_values: list[float] = []
     noise_multiplier_mean_values: list[float] = []
 
+    fisher_values = [float(v) for v in fisher_mean_by_layer.values()]
+    min_fisher_mean = min(fisher_values) if fisher_values else 0.0
+    max_fisher_mean = max(fisher_values) if fisher_values else 0.0
+    max_noise_ratio_value = 0.0
+    fallback_layer_names: set[str] = set()
+
     for inputs, targets in _minibatches(
         train_loader,
         local_steps,
@@ -664,9 +675,13 @@ def _run_adapl_update(
             coordinate_clip_radius = 0.0
             noise_bounds = {name: float(clipping_bound) for name in batch_grads}
         signal_l2 = _l2_norm(batch_grads)
+        for name in list(noise_bounds.keys()):
+            if noise_bounds[name] <= 0:
+                noise_bounds[name] = max(float(clipping_bound), 1e-12)
+                fallback_layer_names.add(name)
         for name in fisher_mean_by_layer:
-            if name not in noise_bounds or noise_bounds[name] <= 0:
-                noise_bounds[name] = float(clipping_bound)
+            if name not in noise_bounds:
+                noise_bounds[name] = max(float(clipping_bound), 1e-12)
         if enable_noise:
             stats_by_layer = layerwise_noise_stats(
                 base_noise_multiplier=base_noise_multiplier,
@@ -674,6 +689,11 @@ def _run_adapl_update(
                 gamma=gamma,
                 clipping_bound=noise_bounds,
             )
+            for s in stats_by_layer.values():
+                max_noise_ratio_value = max(
+                    max_noise_ratio_value,
+                    s.sigma / base_noise_multiplier,
+                )
             sigma_min, sigma_max, sigma_mean, std_mean, noise_l2 = (
                 _apply_masked_noise(
                     batch_grads,
@@ -741,6 +761,10 @@ def _run_adapl_update(
         important_ratio=important_ratio,
         important_params=important_params,
         total_params=total_params,
+        min_fisher_mean=min_fisher_mean,
+        max_fisher_mean=max_fisher_mean,
+        max_noise_ratio=max_noise_ratio_value,
+        fallback_layers=",".join(sorted(fallback_layer_names)),
     )
 
 

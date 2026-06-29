@@ -241,6 +241,10 @@ def init_output_csv(path: str) -> None:
                 "adapl_fisher_important_ratio_mean",
                 "adapl_fisher_important_ratio_min",
                 "adapl_fisher_important_ratio_max",
+                "adapl_min_fisher_mean",
+                "adapl_max_fisher_mean",
+                "adapl_max_noise_ratio",
+                "adapl_fallback_layers",
                 "actual_minibatch_steps_min",
                 "actual_minibatch_steps_max",
                 "actual_minibatch_steps_mean",
@@ -360,6 +364,10 @@ def append_output_csv(
                 _format_optional_metric(
                     round_metrics.get("adapl_fisher_important_ratio_max")
                 ),
+                _format_optional_metric(round_metrics.get("adapl_min_fisher_mean")),
+                _format_optional_metric(round_metrics.get("adapl_max_fisher_mean")),
+                _format_optional_metric(round_metrics.get("adapl_max_noise_ratio")),
+                _format_optional_metric(round_metrics.get("adapl_fallback_layers")),
                 _format_optional_metric(
                     round_metrics.get("actual_minibatch_steps_min")
                 ),

@@ -149,6 +149,20 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     fisher_important_ratios = _float_metadata_values(
         client_updates, "fisher_important_ratio"
     )
+    min_fisher_means = _float_metadata_values(
+        client_updates, "min_fisher_mean"
+    )
+    max_fisher_means = _float_metadata_values(
+        client_updates, "max_fisher_mean"
+    )
+    max_noise_ratios = _float_metadata_values(
+        client_updates, "max_noise_ratio"
+    )
+    fallback_layers_list = [
+        str(update.metadata.get("fallback_layers", ""))
+        for update in client_updates
+        if update.metadata.get("fallback_layers", "")
+    ]
     actual_minibatch_steps = _float_metadata_values(
         client_updates,
         "actual_minibatch_steps",
@@ -250,6 +264,20 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
         ) / len(fisher_important_ratios)
         metrics["adapl_fisher_important_ratio_min"] = min(fisher_important_ratios)
         metrics["adapl_fisher_important_ratio_max"] = max(fisher_important_ratios)
+    if min_fisher_means:
+        metrics["adapl_min_fisher_mean"] = min(min_fisher_means)
+    if max_fisher_means:
+        metrics["adapl_max_fisher_mean"] = max(max_fisher_means)
+    if max_noise_ratios:
+        metrics["adapl_max_noise_ratio"] = max(max_noise_ratios)
+    if fallback_layers_list:
+        unique_layers = set()
+        for layers_str in fallback_layers_list:
+            for layer_name in layers_str.split(","):
+                stripped = layer_name.strip()
+                if stripped:
+                    unique_layers.add(stripped)
+        metrics["adapl_fallback_layers"] = " ".join(sorted(unique_layers))
     if actual_minibatch_steps:
         metrics["actual_minibatch_steps_min"] = min(actual_minibatch_steps)
         metrics["actual_minibatch_steps_max"] = max(actual_minibatch_steps)
@@ -375,7 +403,16 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
             f"{metrics.get('adapl_noise_to_signal_ratio_mean', math.nan):.3f}"
             " fisher_ratio="
             f"{metrics.get('adapl_fisher_important_ratio_mean', math.nan):.3f}"
+            " min_f="
+            f"{metrics.get('adapl_min_fisher_mean', math.nan):.2g}"
+            " max_f="
+            f"{metrics.get('adapl_max_fisher_mean', math.nan):.2g}"
+            " max_nr="
+            f"{metrics.get('adapl_max_noise_ratio', math.nan):.2g}"
         )
+        fallback_layers = metrics.get("adapl_fallback_layers", "")
+        if fallback_layers:
+            text += f" fallback=[{fallback_layers}]"
     if "privacy_budget_active_clients" in metrics:
         text += (
             " active_clients="
