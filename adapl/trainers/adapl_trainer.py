@@ -664,6 +664,9 @@ def _run_adapl_update(
             coordinate_clip_radius = 0.0
             noise_bounds = {name: float(clipping_bound) for name in batch_grads}
         signal_l2 = _l2_norm(batch_grads)
+        for name in fisher_mean_by_layer:
+            if name not in noise_bounds or noise_bounds[name] <= 0:
+                noise_bounds[name] = float(clipping_bound)
         if enable_noise:
             stats_by_layer = layerwise_noise_stats(
                 base_noise_multiplier=base_noise_multiplier,
