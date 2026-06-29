@@ -244,6 +244,7 @@ def init_output_csv(path: str) -> None:
                 "adapl_min_fisher_mean",
                 "adapl_max_fisher_mean",
                 "adapl_max_noise_ratio",
+                "adapl_max_noise_ratio_configured",
                 "adapl_fallback_layers",
                 "actual_minibatch_steps_min",
                 "actual_minibatch_steps_max",

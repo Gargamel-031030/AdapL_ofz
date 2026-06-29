@@ -158,6 +158,9 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
     max_noise_ratios = _float_metadata_values(
         client_updates, "max_noise_ratio"
     )
+    max_noise_ratios_configured = _float_metadata_values(
+        client_updates, "max_noise_ratio_configured"
+    )
     fallback_layers_list = [
         str(update.metadata.get("fallback_layers", ""))
         for update in client_updates
@@ -270,6 +273,10 @@ def _summarize_round_metadata(client_updates) -> dict[str, object]:
         metrics["adapl_max_fisher_mean"] = max(max_fisher_means)
     if max_noise_ratios:
         metrics["adapl_max_noise_ratio"] = max(max_noise_ratios)
+    if max_noise_ratios_configured:
+        metrics["adapl_max_noise_ratio_configured"] = max(
+            max_noise_ratios_configured
+        )
     if fallback_layers_list:
         unique_layers = set()
         for layers_str in fallback_layers_list:
@@ -409,6 +416,8 @@ def _format_round_metadata(metrics: dict[str, object]) -> str:
             f"{metrics.get('adapl_max_fisher_mean', math.nan):.2g}"
             " max_nr="
             f"{metrics.get('adapl_max_noise_ratio', math.nan):.2g}"
+            " max_nr_cap="
+            f"{metrics.get('adapl_max_noise_ratio_configured', math.nan):.2g}"
         )
         fallback_layers = metrics.get("adapl_fallback_layers", "")
         if fallback_layers:

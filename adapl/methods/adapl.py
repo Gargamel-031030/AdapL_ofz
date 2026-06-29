@@ -564,6 +564,7 @@ class AdapL(FederatedMethod):
                 "min_fisher_mean": result.min_fisher_mean,
                 "max_fisher_mean": result.max_fisher_mean,
                 "max_noise_ratio": result.max_noise_ratio,
+                "max_noise_ratio_configured": result.max_noise_ratio_configured,
                 "fallback_layers": result.fallback_layers,
                 "sample_grad_norm": result.sample_grad_norm_mean,
                 "sample_grad_norm_p50": result.sample_grad_norm_p50,

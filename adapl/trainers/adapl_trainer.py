@@ -16,7 +16,11 @@ from adapl.fisher import (
     fisher_important_means,
     make_important_masks,
 )
-from adapl.noise_strategy import LayerNoiseStats, layerwise_noise_stats
+from adapl.noise_strategy import (
+    LayerNoiseStats,
+    MAX_NOISE_RATIO,
+    layerwise_noise_stats,
+)
 from adapl.utils import clone_state_dict
 
 
@@ -50,6 +54,7 @@ class AdapLTrainResult:
     min_fisher_mean: float = 0.0
     max_fisher_mean: float = 0.0
     max_noise_ratio: float = 0.0
+    max_noise_ratio_configured: float = MAX_NOISE_RATIO
     fallback_layers: str = ""
 
 
@@ -577,6 +582,7 @@ def _run_adapl_update(
     clipping_bound: float,
     base_noise_multiplier: float,
     gamma: float,
+    max_noise_ratio: float = MAX_NOISE_RATIO,
     masks: Mapping[str, torch.Tensor],
     fisher_mean_by_layer: Mapping[str, float],
     max_clip_norm: float | None,
@@ -688,6 +694,7 @@ def _run_adapl_update(
                 fisher_mean_by_layer=fisher_mean_by_layer,
                 gamma=gamma,
                 clipping_bound=noise_bounds,
+                max_noise_ratio=max_noise_ratio,
             )
             for s in stats_by_layer.values():
                 max_noise_ratio_value = max(
@@ -764,6 +771,7 @@ def _run_adapl_update(
         min_fisher_mean=min_fisher_mean,
         max_fisher_mean=max_fisher_mean,
         max_noise_ratio=max_noise_ratio_value,
+        max_noise_ratio_configured=float(max_noise_ratio),
         fallback_layers=",".join(sorted(fallback_layer_names)),
     )
 
@@ -781,6 +789,7 @@ def local_update_first(
     clipping_bound: float,
     base_noise_multiplier: float,
     gamma: float,
+    max_noise_ratio: float = MAX_NOISE_RATIO,
     fisher_threshold: float,
     fisher_estimator: str,
     fisher_batches: int,
@@ -827,6 +836,7 @@ def local_update_first(
         clipping_bound=clipping_bound,
         base_noise_multiplier=base_noise_multiplier,
         gamma=gamma,
+        max_noise_ratio=max_noise_ratio,
         masks=masks,
         fisher_mean_by_layer=fisher_mean_by_layer,
         max_clip_norm=None,
@@ -855,6 +865,7 @@ def local_update_decay(
     clipping_bound: float,
     base_noise_multiplier: float,
     gamma: float,
+    max_noise_ratio: float = MAX_NOISE_RATIO,
     fisher_threshold: float,
     fisher_estimator: str,
     fisher_batches: int,
@@ -903,6 +914,7 @@ def local_update_decay(
         clipping_bound=clipping_bound,
         base_noise_multiplier=base_noise_multiplier,
         gamma=gamma,
+        max_noise_ratio=max_noise_ratio,
         masks=masks,
         fisher_mean_by_layer=fisher_mean_by_layer,
         max_clip_norm=max_clip_norm if enable_clipping else None,
