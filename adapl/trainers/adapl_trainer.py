@@ -689,11 +689,15 @@ def _run_adapl_update(
             if name not in noise_bounds:
                 noise_bounds[name] = max(float(clipping_bound), 1e-12)
         if enable_noise:
+            noise_calibration_bounds = {
+                name: max(float(bound) / float(batch_size), 1e-12)
+                for name, bound in noise_bounds.items()
+            }
             stats_by_layer = layerwise_noise_stats(
                 base_noise_multiplier=base_noise_multiplier,
                 fisher_mean_by_layer=fisher_mean_by_layer,
                 gamma=gamma,
-                clipping_bound=noise_bounds,
+                clipping_bound=noise_calibration_bounds,
                 max_noise_ratio=max_noise_ratio,
             )
             for s in stats_by_layer.values():
